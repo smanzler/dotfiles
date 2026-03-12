@@ -7,10 +7,9 @@ return {
     keys = function()
       local builtin = require("telescope.builtin")
       return {
-        { "<leader>ff", builtin.find_files, desc = "Find Files" },
+        { "<C-f>", builtin.find_files, desc = "Find Files" },
+        { "<leader>ff", builtin.git_files, desc = "Git Files" },
         { "<leader>fg", builtin.live_grep, desc = "Live Grep" },
-        { "<leader>fb", builtin.buffers, desc = "Buffers" },
-        { "<leader>fh", builtin.help_tags, desc = "Help Tags" },
       }
     end,
 }
