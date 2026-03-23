@@ -19,6 +19,7 @@ return {
         end,
         desc = "Find Directories"
       },
+      { "<leader>gs", builtin.lsp_definitions, desc = "Find definition" }
     }
   end,
 }

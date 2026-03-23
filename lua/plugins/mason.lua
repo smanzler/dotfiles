@@ -9,7 +9,8 @@ return {
         'vtsls',
         'lua_ls',
         'tailwindcss',
-        'eslint'
+        'eslint',
+        'jsonls'
       }
     }
   },
