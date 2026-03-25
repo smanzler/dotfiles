@@ -1,7 +1,6 @@
 require("simon.remap")
 
 vim.opt.clipboard = "unnamedplus"
-vim.g.netrw_bufsettings = 'noma nomod nu rnu nobl nowrap ro'
 vim.opt.relativenumber = true
 
 vim.opt.tabstop = 2
@@ -15,6 +14,3 @@ vim.diagnostic.config({
     prefix = "●",
   },
 })
-
-vim.o.incsearch = true
-vim.o.hlsearch = false
