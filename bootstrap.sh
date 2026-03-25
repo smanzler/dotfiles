@@ -37,7 +37,41 @@ confirm() {
   done
 }
 
-confirm "testing"
-echo $?
+# Install homebrew
+if ! command_exists brew; then
+  if ! confirm "Would you like to install homebrew?"; then
+    exit 1
+  fi
+
+  echo "Installing homebrew..."
+
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  if ! command_exists brew; then
+    echo "Unable to install homebrew"
+    exit 1
+  fi
+
+  echo "Installed homebrew successfully"
+fi
+
+# Install Brewfile packages
+if confirm "Would you like to install packages from Brewfile?"; then
+  echo "Installing packages..."
+  brew bundle --file="$DOTFILES_DIR/Brewfile"
+  echo "Installed packages"
+fi
+
+# Check if stow is available
+if ! command_exists stow; then
+  # Exit for now
+  exit 1
+fi
+
+echo "Creating symlinks..."
+if ! stow --dir="$DOTFILES_DIR" --target="$HOME" --restow . >/dev/null; then
+  exit 1
+fi
+echo "Created symlinks"
 
 echo -e "\033[32mDone\033[0m"
