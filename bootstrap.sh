@@ -37,6 +37,25 @@ confirm() {
   done
 }
 
+check_backup() {
+  local target="$1"
+
+  # nothing there or linked
+  if [ ! -e "$target" ] || [ -L "$target" ]; then
+    return 0
+  fi
+
+  if ! confirm "Existing path found at $target. Back it up?"; then
+    echo "Aborting so nothing gets overwritten"
+    exit 1
+  fi 
+  
+  local backup="${target}.backup.$(date +%Y%m%d%H%H%S)"
+  mv "$target" "$backup"
+  echo "Backed up $target => $backup \n"
+}
+    
+
 # Install homebrew
 if ! command_exists brew; then
   if ! confirm "Would you like to install homebrew?"; then
@@ -68,10 +87,29 @@ if ! command_exists stow; then
   exit 1
 fi
 
-echo "Creating symlinks..."
-if ! stow --dir="$DOTFILES_DIR" --target="$HOME" --restow . >/dev/null; then
-  exit 1
-fi
-echo "Created symlinks"
+echo ""
 
-echo -e "\033[32mDone\033[0m"
+# Check for existing home files
+for entry in "$DOTFILES_DIR"/home/.[!.]*; do
+  [ -e "$entry" ] || continue
+
+  name="$(basename "$entry")"
+  target="$HOME/$name"
+
+  check_backup "$target"
+done
+
+# Check for existing .config files
+for entry in "$DOTFILES_DIR"/xdg/*; do
+  [ -e "$entry" ] || continue
+
+  name="$(basename "$entry")"
+  target="$HOME/.config/$name"
+
+  check_backup "$target"
+done
+
+echo "Creating symlinks..."
+stow --dir="$DOTFILES_DIR" --target="$HOME" --restow home
+stow --dir="$DOTFILES_DIR" --target="$HOME/.config" --restow xdg
+echo "Created symlinks"
