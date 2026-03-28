@@ -8,6 +8,9 @@ return {
     require('lualine').setup({
       options = {
         theme = custom_codedark
+      },
+      extensions = {
+        'oil'
       }
     })
   end

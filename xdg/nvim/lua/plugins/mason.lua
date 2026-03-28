@@ -10,7 +10,9 @@ return {
         'lua_ls',
         'tailwindcss',
         'eslint',
-        'jsonls'
+        'jsonls',
+        'basedpyright',
+        'ruff'
       }
     }
   },
