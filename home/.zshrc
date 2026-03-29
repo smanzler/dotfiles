@@ -121,6 +121,10 @@ $(prompt_char) '
 RPROMPT='%F{8}%t%f'
 # prompt end
 
+# homebrew
+eval "$(/opt/homebrew/bin/brew shellenv)"
+# homebrew end
+
 # docker
 export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
 # docker end
