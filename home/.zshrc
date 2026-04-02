@@ -129,14 +129,14 @@ elif [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
 fi
 # homebrew end
 
+# alias
+alias vi=nvim
+alias vim=nvim
+# alias end
+
 # docker
 export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
 # docker end
-
-# nvim
-alias vi=nvim
-alias vim=nvim
-# nvim end
 
 # pnpm
 export PNPM_HOME="/Users/simonmanzler/Library/pnpm"
@@ -145,6 +145,10 @@ case ":$PATH:" in
   *) export PATH="$PNPM_HOME:$PATH" ;;
 esac
 # pnpm end
+
+# zoxide
+eval "$(zoxide init zsh)"
+# zoxide end
 
 # keybinds
 bindkey '^y' autosuggest-accept
