@@ -28,36 +28,41 @@ tooltip {
 }
 
 #workspaces button {
-    padding: 0 5px;
-    background-color: transparent;
-    color: #ffffff;
+  padding: 0 5px;
+  background-color: transparent;
+  color: #ffffff;
 }
 
 #workspaces button {
-    padding: 0px 10px;
-    margin: 0px 3px;
-    border-radius: 12px;
-    color: @text;
-    background-color: @bg1;
-    transition: all 0.3s ease-in-out;
-    opacity:0.4;
-    font-size:13px;
+  padding: 0px 10px;
+  margin: 0px 3px;
+  border-radius: 12px;
+  color: @text;
+  background-color: @bg1;
+  transition: all 0.3s ease-in-out;
+  opacity:0.4;
+  font-size:13px;
 }
 
 #workspaces button.active {
-    color: @muted;
-    background-color: @brand;
-    border-radius: 10px;
-    min-width: 30px;
-    background-size: 400% 400%;
-    transition: all 0.3s ease-in-out;
-    opacity:1.0;
+  color: @muted;
+  background-color: @brand;
+  border-radius: 10px;
+  min-width: 30px;
+  transition: all 0.3s ease-in-out;
+  opacity:1.0;
 }
 
 #workspaces button:hover {
-    background-color: @overlay0;
-    color: @muted;
-    border-radius: 10px;
-    min-width: 30px;
-    background-size: 400% 400%;
+  background-color: @overlay0;
+  color: @muted;
+  border-radius: 10px;
+  min-width: 30px;
+}
+
+#clock {
+  padding: 0 12px;
+  background-color: @bg0;
+  border-radius: 20px;
+  font-weight: bold;
 }
