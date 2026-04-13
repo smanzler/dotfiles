@@ -1,0 +1,20 @@
+// -*- mode: jsonc -*-
+{
+  "modules-left": [
+    "cpu"
+  ],
+  "modules-center": [
+    "hyprland/workspaces"
+  ],
+  "modules-right": [
+    "clock"
+  ],
+  "margin": 4,
+  "fixed_center": true,
+  "hyprland/workspaces": {
+    "persistent-workspaces": {
+      "*": 5
+    }
+  },
+  "smooth-scrolling-threshold": 4
+}
