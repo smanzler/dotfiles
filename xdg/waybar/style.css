@@ -1,11 +1,11 @@
-@import "colors/colors.css";
+@import "colors.css";
 
 * {
   all: unset;
   border: none; 
   border-radius: 0px;
   font-family: "JetBrainsMono Nerd Font";
-  font-size: 16px;
+  font-size: 14px;
   min-height: 0;
   padding: 0;
   margin: 0;
@@ -16,6 +16,11 @@
   padding: 6px;
   border-radius: 50px;
 }
+
+.modules-right > widget > * {
+  margin-left: 8px;
+}
+
 
 window#waybar {
   background: transparent;
@@ -28,41 +33,38 @@ tooltip {
 }
 
 #workspaces button {
-  padding: 0 5px;
-  background-color: transparent;
-  color: #ffffff;
-}
-
-#workspaces button {
   padding: 0px 10px;
   margin: 0px 3px;
   border-radius: 12px;
-  color: @text;
   background-color: @bg1;
   transition: all 0.3s ease-in-out;
-  opacity:0.4;
-  font-size:13px;
 }
 
 #workspaces button.active {
-  color: @muted;
   background-color: @brand;
-  border-radius: 10px;
   min-width: 30px;
   transition: all 0.3s ease-in-out;
-  opacity:1.0;
 }
 
 #workspaces button:hover {
   background-color: @overlay0;
-  color: @muted;
   border-radius: 10px;
   min-width: 30px;
 }
 
-#clock {
+#clock,
+#battery {
   padding: 0 12px;
   background-color: @bg0;
   border-radius: 20px;
   font-weight: bold;
+  color: @muted;
+}
+
+#battery.warning {
+  color: orange;
+}
+
+#battery.critical {
+  color: red;
 }

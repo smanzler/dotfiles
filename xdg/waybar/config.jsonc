@@ -7,24 +7,48 @@
     "hyprland/workspaces"
   ],
   "modules-right": [
+    "battery",
     "clock"
   ],
-  "margin": 4,
+  "margin-top": 16,
+  "margin-right": 16,
+  "margin-left": 16,
+  "margin-bottom": 0,
   "fixed_center": true,
   "hyprland/workspaces": {
-    "format": "{icon}",
-    "format-icons": {
-      "urgent": "",
-      "active": "",
-      "default": ""
-    },
-    "persistent_workspaces": {
+    "format": "",
+    "persistent-workspaces": {
       "*": 5
     }
   },
+  "battery": {
+    "interval": 60,
+    "states": {
+      "warning": 30,
+      "critical": 15
+    },
+    "format": "{icon} {capacity}%",
+    "format-charging": "<span foreground='limegreen'>󰂄</span> {capacity}%",
+    "format-icons": {
+      "default": [
+        "󰂎",
+        "󰁺",
+        "󰁻",
+        "󰁼",
+        "󰁽",
+        "󰁾",
+        "󰁿",
+        "󰂀",
+        "󰂁",
+        "󰂂",
+        "󰁹"
+      ]
+    },
+    "max-length": 25
+  },
   "clock": {
     "interval": 60,
-    "format": "{:%I:%M %p}",
+    "format": " {:%I:%M %p}",
     "tooltip": true,
     "tooltip-format": "{:%A, %B %d, %Y}\n\n<tt><small>{calendar}</small></tt>",
     "calendar": {
