@@ -1,7 +1,8 @@
 // -*- mode: jsonc -*-
 {
   "modules-left": [
-    "cpu"
+    "cpu",
+    "backlight/slider"
   ],
   "modules-center": [
     "hyprland/workspaces"
