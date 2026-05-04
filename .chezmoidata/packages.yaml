@@ -1,9 +1,0 @@
-packages:
-  base:
-    - git
-    - neovim
-    - zsh
-    - zoxide
-    - tmux
-    - zsh-syntax-highlighting
-    - zsh-autosuggestions

@@ -1,7 +1,7 @@
 {
   "include": [
     "./modules.jsonc",
-{{ if (and (eq .chezmoi.os "linux") (eq (output "hostnamectl" "--json=short" | mustFromJson).Chassis "laptop")) }}
+{{ if eq .chassis "laptop" }}
     "./laptop.jsonc"
 {{ else }}
     "./desktop.jsonc"

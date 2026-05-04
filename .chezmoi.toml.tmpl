@@ -1,0 +1,12 @@
+{{- $chassisType := "desktop" -}}
+{{- if eq .chezmoi.os "darwin" -}}
+{{-   if contains "MacBook" (output "sh" "-c" "system_profiler SPHardwareDataType 2>/dev/null") }}
+{{-     $chassisType = "laptop" -}}
+{{-   end -}}
+{{- else if eq .chezmoi.os "linux" -}}
+{{-   $chassisType = (output "hostnamectl" "--json=short" | mustFromJson).Chassis -}}
+{{- else if eq .chezmoi.os "windows" -}}
+{{-   $chassisType = (output "pwsh.exe" "-NoProfile" "-NonInteractive" "-Command" "if ((Get-CimInstance -Class Win32_Battery | Measure-Object).Count -gt 0) { 'laptop' } else { 'desktop' }") | trim -}}
+{{- end -}}
+[data]
+chassis = "{{ $chassisType }}"
