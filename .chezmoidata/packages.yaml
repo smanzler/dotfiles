@@ -5,3 +5,5 @@ packages:
     - zsh
     - zoxide
     - tmux
+    - zsh-syntax-highlighting
+    - zsh-autosuggestions
