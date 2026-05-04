@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-{{- if eq $.chezmoi.os "darwin" }}
+{{ if eq $.chezmoi.os "darwin" }}
 
 brew install {{ join " " .packages.base }}
 
@@ -11,7 +11,7 @@ sudo pacman -S --noconfirm {{ join " " .packages.base }}
 
 {{-   else if eq $.chezmoi.osRelease.id "ubuntu" -}}
 
-sudo apt get {{ join " " .packages.base }}
+sudo apt-get install -y {{ join " " .packages.base }}
 
 {{-   end }}
 
