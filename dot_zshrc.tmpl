@@ -158,8 +158,13 @@ bindkey '^y' autosuggest-accept
 source $HOMEBREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 source $HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 {{- else if eq $.chezmoi.os "linux" }}
+{{-   if eq $.chezmoi.osRelease.id "arch" }}
+source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+{{-   else }}
 source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+{{-   end }}
 {{- end }}
 
 export NVM_DIR="$HOME/.nvm"
