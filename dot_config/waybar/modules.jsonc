@@ -1,6 +1,6 @@
 // -*- mode: jsonc -*-
 {
-  "margin-top": 20,
+  "margin-top": 8,
   "margin-right": 16,
   "margin-left": 16,
   "margin-bottom": 0,
@@ -17,21 +17,16 @@
       "warning": 30,
       "critical": 15
     },
-    "format": "{icon} {capacity}%",
+    "format": "{icon}  {capacity}%",
     "format-charging": "<span foreground='limegreen'>󰂄</span> {capacity}%",
     "format-icons": {
       "default": [
-        "󰂎",
-        "󰁺",
-        "󰁻",
-        "󰁼",
-        "󰁽",
-        "󰁾",
-        "󰁿",
-        "󰂀",
-        "󰂁",
-        "󰂂",
-        "󰁹"
+        "",
+        "",
+        "",
+        "",
+        "",
+        "󱊦"
       ]
     },
     "max-length": 25
@@ -129,20 +124,20 @@
   },
   "bluetooth": {
     "format": "{}",
-    "format-on": "󰂰",
+    "format-on": "󰂯",
     "format-off": "󰂲",
     "format-disabled": "󰂲",
-    "format-connected": "{device_alias}",
-    "format-connected-battery": "{device_alias}",
+    "format-connected": "󰂰",
+    "format-connected-battery": "󰥉",
     "tooltip-format": "{device_enumerate}",
     "tooltip-format-enumerate-connected": "{device_alias}",
-    "tooltip-format-enumerate-connected-battery": "{device_alias}   {device_battery_percentage}%",
+    "tooltip-format-enumerate-connected-battery": "{device_alias}     {device_battery_percentage}%",
     "on-click": "~/.local/bin/toggle_bluetooth &",
     "on-click-right": "hyprctl dispatch exec blueman-manager"
   },
   "clock": {
     "interval": 60,
-    "format": "{:%I:%M}",
+    "format": "<span weight='bold'>{0:%a %b %d}</span> {0:%I:%M} {0:%p}",
     "tooltip": true,
     "tooltip-format": "{:%A, %B %d, %Y}\n\n<tt><small>{calendar}</small></tt>",
     "calendar": {

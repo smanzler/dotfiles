@@ -4,16 +4,16 @@
   all: unset;
   border: none;
   border-radius: 0px;
-  font-family: "CaskaydiaCove Nerd Font Propo";
-  font-size: 13px;
+  font-family: system-ui, "Roboto Mono Nerd Font";
+  font-size: 14px;
   min-height: 0;
   padding: 0;
   margin: 0;
 }
 
 #waybar {
-  font-weight: bold;
-  color: @muted;
+  font-weight: 600;
+  color: @text;
 }
 
 /* global paddings */
@@ -23,8 +23,9 @@
 #battery,
 #power-profiles-daemon,
 #backlight,
-#pulseaudio {
-  padding: 1px 7px;
+#pulseaudio,
+#clock {
+  padding: 1px 11px;
 }
 
 /* fix icon padding */
@@ -58,16 +59,6 @@
   margin: 0 4px;
 }
 
-.modules-center,
-#group-utils,
-#mpris,
-#custom-power,
-#clock {
-  background: @bg0;
-  padding: 6px 12px;
-  border-radius: 50px;
-}
-
 .modules-center {
   padding: 6px;
 }
@@ -91,13 +82,16 @@
 #workspaces button.active {
   background-color: @brand;
   min-width: 30px;
-  transition: all 0.3s ease-in-out;
 }
 
 #workspaces button:hover {
-  background-color: @overlay0;
+  background-color: @bg2;
   border-radius: 10px;
   min-width: 30px;
+}
+
+#workspaces button.active:hover {
+  background-color: @brand;
 }
 
 slider {
@@ -138,8 +132,8 @@ menu,
 menu {
   border-radius: 10px;
   font-weight: 700;
-  color: @muted;
-  background: @bg0;
+  color: @text;
+  background: @overlay;
 }
 
 menu > *,
@@ -159,4 +153,10 @@ menu > *:hover {
 
 #battery.critical {
   color: red;
+}
+
+#battery {
+  background-image: url("./images/fluent--battery-0-20-regular.svg");
+  background-size: contain;
+  background-repeat: no-repeat;
 }

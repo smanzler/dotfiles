@@ -1,15 +1,13 @@
 // -*- mode: jsonc -*-
 {
   "modules-left": [
-    "clock",
-    "mpris"
+    "custom/power"
   ],
   "modules-center": [
     "hyprland/workspaces"
   ],
   "modules-right": [
-    "group/group-utils",
-    "custom/power"
+    "group/group-utils"
   ],
   "group/group-volume": {
     "orientation": "horizontal",
@@ -36,12 +34,14 @@
   "group/group-utils": {
     "orientation": "horizontal",
     "modules": [
-      "network",
-      "bluetooth",
-      "battery",
       "power-profiles-daemon",
       "group/group-volume",
-      "group/group-backlight"
+      "group/group-backlight",
+      "mpris",
+      "bluetooth",
+      "network",
+      "battery",
+      "clock"
     ]
   },
   "group/group-activity": {
