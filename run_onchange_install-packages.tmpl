@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 
-{{ if eq $.chezmoi.os "darwin" }}
+{{- if eq $.chezmoi.os "darwin" }}
 
-  brew install {{ join " " .packages.base }}
+brew install {{ join " " .packages.base }}
 
-{{ else if eq $.chezmoi.os "linux" }}
-  {{ if eq $.chezmoi.osRelease.id "arch" }}
+{{- else if eq $.chezmoi.os "linux" }}
+{{-   if eq $.chezmoi.osRelease.id "arch" }}
 
-    sudo pacman -S --noconfirm {{ join " " .packages.base }}
+sudo pacman -S --noconfirm {{ join " " .packages.base }}
 
-  {{ else if eq $.chezmoi.osRelease.id "ubuntu" -}}
+{{-   else if eq $.chezmoi.osRelease.id "ubuntu" -}}
 
-    sudo apt get {{ join " " .packages.base }}
+sudo apt get {{ join " " .packages.base }}
 
-  {{ end }}
+{{-   end }}
 
-{{ end }}
+{{- end }}

@@ -1,16 +1,5 @@
 // -*- mode: jsonc -*-
 {
-  "modules-left": [
-    "clock",
-    "mpris"
-  ],
-  "modules-center": [
-    "hyprland/workspaces"
-  ],
-  "modules-right": [
-    "group/group-utils",
-    "custom/power"
-  ],
   "margin-top": 20,
   "margin-right": 16,
   "margin-left": 16,
@@ -191,44 +180,5 @@
     "format": "",
     "tooltip": false,
     "on-click": "shutdown now"
-  },
-  "group/group-volume": {
-    "orientation": "horizontal",
-    "drawer": {
-      "transition-duration": 600,
-      "transition-left-to-right": true
-    },
-    "modules": [
-      "pulseaudio",
-      "pulseaudio/slider"
-    ]
-  },
-  "group/group-backlight": {
-    "orientation": "horizontal",
-    "drawer": {
-      "transition-duration": 600,
-      "transition-left-to-right": true
-    },
-    "modules": [
-      "backlight",
-      "backlight/slider"
-    ]
-  },
-  "group/group-utils": {
-    "orientation": "horizontal",
-    "modules": [
-      "network",
-      "bluetooth",
-      "battery",
-      "power-profiles-daemon",
-      "group/group-volume",
-      "group/group-backlight"
-    ]
-  },
-  "group/group-activity": {
-    "orientation": "horizontal",
-    "modules": [
-      "cpu"
-    ]
   }
 }
