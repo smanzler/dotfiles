@@ -1,0 +1,17 @@
+configuration {
+  modes: "window,drun,run,ssh";
+  show-icons: true;
+  terminal: "ghostty +new-terminal";
+  drun-display-format: "{name} [<span weight='light' size='small'><i>({generic})</i></span>]";
+  display-drun: "Applications: ";
+  timeout {
+      action: "kb-cancel";
+      delay:  0;
+  }
+  filebrowser {
+      directories-first: true;
+      sorting-method:    "name";
+  }
+}
+
+@theme "./theme.rasi"
