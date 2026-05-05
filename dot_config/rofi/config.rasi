@@ -2,8 +2,10 @@ configuration {
   modes: "window,drun,run,ssh";
   show-icons: true;
   terminal: "ghostty +new-terminal";
-  drun-display-format: "{name} [<span weight='light' size='small'><i>({generic})</i></span>]";
-  display-drun: "Applications: ";
+  display-drun: "Applications:";
+  display-window: "Windows:";
+  drun-display-format: "{name}";
+  font: "Inter 12";
   timeout {
       action: "kb-cancel";
       delay:  0;

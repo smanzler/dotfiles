@@ -1,4 +1,4 @@
-theme = "Horizon"
+theme = Horizon
 window-decoration = true
 copy-on-select = clipboard
 window-colorspace = "display-p3"
