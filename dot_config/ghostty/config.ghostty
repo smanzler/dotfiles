@@ -6,3 +6,5 @@ macos-titlebar-style = transparent
 background-opacity = 0.8
 background-blur = 90
 maximize = true
+
+custom-shader = shaders/cursor_warp.glsl
