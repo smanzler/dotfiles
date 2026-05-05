@@ -1,5 +1,5 @@
 * {
-  bg: #1c1e2680;
+  bg: #1c1e2699;
   bg-selected: #31324422;
 
   fg: #cdd6f4;
@@ -61,5 +61,5 @@ mainbox {
 prompt {
   enabled: true;
   padding: 12 0 0 12;
-  text-color: @fg;
+  text-color: @fg-alt;
 }

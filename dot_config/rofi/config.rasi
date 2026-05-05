@@ -6,6 +6,7 @@ configuration {
   display-window: "Windows:";
   drun-display-format: "{name}";
   font: "Inter 12";
+
   timeout {
       action: "kb-cancel";
       delay:  0;
