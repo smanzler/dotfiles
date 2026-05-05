@@ -9,3 +9,6 @@ vim.keymap.set("n", "<C-u>", "<C-u>zz")
 vim.keymap.set("n", "<C-d>", "<C-d>zz")
 
 vim.keymap.set("n", "<leader>e", vim.diagnostic.open_float, { noremap = true, silent = true })
+
+vim.keymap.set("n", "<leader>tw",
+  ":call jobstart(['tmux', 'new-window', '-d', '-c', getcwd(), 'nvim', expand('%:p')])<cr>")
