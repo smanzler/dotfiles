@@ -1,10 +1,10 @@
 {
   "include": [
-    "./modules.jsonc",
+    "./modules/modules.jsonc",
 {{ if eq .chassis "laptop" }}
-    "./laptop.jsonc"
+    "./modules/laptop.jsonc"
 {{ else }}
-    "./desktop.jsonc"
+    "./modules/desktop.jsonc"
 {{ end }}
   ]
 }
