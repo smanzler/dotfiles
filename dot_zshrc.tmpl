@@ -109,16 +109,29 @@ ZSH_THEME_GIT_PROMPT_SUFFIX=""
 ZSH_THEME_GIT_PROMPT_DIRTY="%f)%F{red}*%f"
 ZSH_THEME_GIT_PROMPT_CLEAN="%f)"
 
-function prompt_char {
-	if [ $UID -eq 0 ]; then echo "%F{red}#%f"; else echo '%F{blue}$%f'; fi
-}
-
-PROMPT='%(?, ,%F{red}FAIL%f
+INIT_PROMPT='%(?, ,%F{red}FAIL%f
 )
 %F{8}%n%f %B%F{blue}%~%f%b $(git_prompt_info)
-$(prompt_char) '
+'
 
+PROMPT=$INIT_PROMPT
 RPROMPT='%F{8}%t%f'
+
+CHAR=$([ $UID -eq 0 ] && echo "#" || echo "$")
+
+function zle-line-init zle-keymap-select {
+  case $KEYMAP in
+    vicmd) COLOR=magenta ;;
+    *)     COLOR=$([ $UID -eq 0 ] && echo red || echo blue ) ;;
+  esac
+
+  PROMPT="${INIT_PROMPT}%F{$COLOR}${CHAR}%f "
+  zle reset-prompt
+}
+
+zle -N zle-line-init
+zle -N zle-keymap-select
+
 # prompt end
 
 # homebrew
@@ -151,6 +164,8 @@ eval "$(zoxide init zsh)"
 # zoxide end
 
 # keybinds
+bindkey -v
+bindkey -M viins 'jk' vi-cmd-mode
 bindkey '^y' autosuggest-accept
 
 # plugins
