@@ -22,7 +22,14 @@ vim.g.mapleader = " "
 vim.g.maplocalleader = "\\"
 
 -- Setup quick sync
-vim.keymap.set("n", "<leader>ls", "<cmd>:Lazy sync<cr>")
+vim.keymap.set("n", "<leader>ls", function()
+  require("lazy").sync({ wait = true })
+
+  -- re-add to chezmoi
+  vim.fn.system({ "chezmoi", "add", vim.fn.stdpath("config") .. "/lazy-lock.json" })
+
+  print("Lazy sync + lockfile updated + chezmoi add")
+end, { desc = "Lazy sync + chezmoi add lockfile" })
 
 -- Setup lazy.nvim
 require("lazy").setup({

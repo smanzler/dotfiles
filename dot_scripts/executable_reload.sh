@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # chezmoi
-chezmoi apply
+chezmoi apply --force
 
 # waybar
 killall waybar
