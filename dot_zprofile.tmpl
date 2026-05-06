@@ -1,4 +1,4 @@
-{{ if (and (eq $.chezmoi.os "linux") ($.chezmoi.osRelease.id "arch")) }}
+{{ if (and (eq $.chezmoi.os "linux") (eq $.chezmoi.osRelease.id "arch")) }}
 if [ -z "$DISPLAY" ] && [ "$XDG_VTNR" -eq 1 ]; then
   exec start-hyprland
 fi
