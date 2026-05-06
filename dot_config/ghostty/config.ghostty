@@ -1,4 +1,5 @@
 theme = Horizon
+font-family = "JetBrainsMono Nerd Font"
 window-decoration = true
 copy-on-select = clipboard
 window-colorspace = "display-p3"

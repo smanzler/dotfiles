@@ -1,11 +1,10 @@
 @define-color bg0 #000000;
 @define-color bg1 #7a7a7a;
-@define-color bg2 #aaaaaa;
-@define-color bg3 #000000;
 
 @define-color muted #bbbbbb;
 @define-color text #ffffff;
 
 @define-color overlay rgba(0,0,0,0.5);
+@define-color menu rgba(28,30,38,0.8);
 
 @define-color brand #ffffff;
