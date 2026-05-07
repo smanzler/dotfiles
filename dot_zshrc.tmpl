@@ -32,7 +32,6 @@ function zle-line-init zle-keymap-select {
 
 zle -N zle-line-init
 zle -N zle-keymap-select
-# prompt end
 
 # homebrew
 if [[ -x /opt/homebrew/bin/brew ]]; then
@@ -40,16 +39,13 @@ if [[ -x /opt/homebrew/bin/brew ]]; then
 elif [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 fi
-# homebrew end
 
 # alias
 alias vi=nvim
 alias vim=nvim
-# alias end
 
 # docker
 export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
-# docker end
 
 # pnpm
 export PNPM_HOME="/Users/simonmanzler/Library/pnpm"
@@ -57,21 +53,23 @@ case ":$PATH:" in
   *":$PNPM_HOME:"*) ;;
   *) export PATH="$PNPM_HOME:$PATH" ;;
 esac
-# pnpm end
 
 # zoxide
 eval "$(zoxide init zsh)"
-# zoxide end
 
 # keybinds
 bindkey -v
 bindkey -M viins 'jk' vi-cmd-mode
 bindkey '^y' autosuggest-accept
-# keybinds end
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+# history
+HISTSIZE=1000
+SAVEHIST=50000
+HISTFILE=$HOME/.zsh_history
 
 # plugins
 {{- if eq $.chezmoi.os "darwin" }}
