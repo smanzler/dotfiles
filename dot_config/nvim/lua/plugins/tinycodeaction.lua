@@ -6,10 +6,13 @@ return {
   event = "LspAttach",
   opts = {},
   config = function()
-    require("tiny-code-action").setup()
+    local tiny = require("tiny-code-action")
+    tiny.setup({
+      picker = "buffer"
+    })
 
     vim.keymap.set({ "n", "x" }, "<leader>ca", function()
-      require("tiny-code-action").code_action()
+      tiny.code_action()
     end, { noremap = true, silent = true })
   end
 }

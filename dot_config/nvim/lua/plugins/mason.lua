@@ -12,7 +12,8 @@ return {
         'jsonls',
         'basedpyright',
         'ruff',
-        'bashls'
+        'bashls',
+        'denols'
       }
     }
   },
