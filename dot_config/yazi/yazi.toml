@@ -2,3 +2,6 @@
 play = [
 	{ run = "mpv %s", orphan = true },
 ]
+
+[manager]
+editor = "nvim"

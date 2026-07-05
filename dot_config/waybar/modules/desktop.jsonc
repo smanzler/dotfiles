@@ -9,6 +9,8 @@
   ],
   "modules-right": [
     "group/group-utils",
+    "custom/swaync",
+    "custom/recorder",
     "custom/power"
   ],
   "group/group-volume": {

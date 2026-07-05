@@ -11,5 +11,9 @@ nohup waybar >/dev/null 2>&1 &
 killall hyprpaper
 nohup hyprpaper >/dev/null 2>&1 &
 
+# swaync
+exec swaync-client -R
+exec swaync-client -rs
+
 # ghostty
 systemctl reload --user app-com.mitchellh.ghostty.service

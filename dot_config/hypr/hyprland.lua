@@ -203,8 +203,9 @@ hl.config({
 
 hl.config({
   misc = {
-    force_default_wallpaper = 0,
-    disable_hyprland_logo   = true,
+    force_default_wallpaper    = 0,
+    disable_hyprland_logo      = true,
+    initial_workspace_tracking = 2,
   },
 })
 
@@ -265,7 +266,7 @@ hl.bind(mainMod .. " + M",
 hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }))
 hl.bind(mainMod .. " + P", hl.dsp.window.pseudo())
 
-hl.bind("F8", hl.dsp.exec_cmd("pkill -USR1 -f gpu-screen-recorder"))
+hl.bind("F8", hl.dsp.exec_cmd("~/.scripts/clip.sh"))
 
 hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd("~/.scripts/reload.sh"))
 
@@ -376,4 +377,18 @@ hl.layer_rule {
   blur_popups  = true,
   ignore_alpha = 0.1,
   match        = { namespace = "rofi" }
+}
+
+hl.layer_rule {
+  name         = "swaync-control-center",
+  blur_popups  = true,
+  ignore_alpha = 0.1,
+  match        = { namespace = "swaync-control-center" }
+}
+
+hl.layer_rule {
+  name         = "swaync-notification-window",
+  blur_popups  = true,
+  ignore_alpha = 0.1,
+  match        = { namespace = "swaync-notification-window" }
 }
