@@ -21,5 +21,6 @@
         ]
       }
     ]
-  }
+  },
+  "agentPushNotifEnabled": true
 }
