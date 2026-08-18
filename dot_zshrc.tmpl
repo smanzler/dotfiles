@@ -46,7 +46,7 @@ fi
 # alias
 alias vi=nvim
 alias vim=nvim
-alias gg='nvim +Neogit'
+alias gg='nvim "+Neogit kind=replace"'
 
 # editor
 export EDITOR=nvim
@@ -73,7 +73,7 @@ bindkey '^y' autosuggest-accept
 # straight into neogit; a half-typed line is stashed and comes back afterwards
 neogit-widget() {
   [[ -n $BUFFER ]] && zle push-line
-  BUFFER='nvim +Neogit'
+  BUFFER='gg'
   zle accept-line
 }
 zle -N neogit-widget

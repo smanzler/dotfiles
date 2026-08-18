@@ -15,7 +15,7 @@ function M.setup_child()
   vim.keymap.set("n", "Q", "q", { desc = "Record macro" })
 end
 
-function M.popup_edit(path, line)
+function M.popup_edit(path, line, on_close)
   if not vim.env.TMUX then
     vim.cmd("edit " .. vim.fn.fnameescape(path))
     if line then
@@ -46,12 +46,9 @@ function M.popup_edit(path, line)
     on_exit = function()
       vim.schedule(function()
         vim.cmd("checktime")
-        pcall(function()
-          require("diffview.actions").refresh_files()
-        end)
-        pcall(function()
-          require("neogit").dispatch_refresh()
-        end)
+        if on_close then
+          pcall(on_close)
+        end
       end)
     end,
   })

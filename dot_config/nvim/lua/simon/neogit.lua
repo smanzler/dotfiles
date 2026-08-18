@@ -1,14 +1,5 @@
 local M = {}
 
-local function is_throwaway(buf)
-  return vim.api.nvim_buf_is_valid(buf)
-      and vim.api.nvim_buf_get_name(buf) == ""
-      and vim.bo[buf].buftype == ""
-      and not vim.bo[buf].modified
-      and vim.api.nvim_buf_line_count(buf) == 1
-      and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
-end
-
 local function cursor_line(status, item)
   if not rawget(item, "diff") then
     return nil
@@ -37,7 +28,9 @@ local function open_under_cursor()
 
   local item = status.buffer.ui:get_item_under_cursor()
   if item and item.absolute_path then
-    require("simon.tmux").popup_edit(item.absolute_path, cursor_line(status, item))
+    require("simon.tmux").popup_edit(item.absolute_path, cursor_line(status, item), function()
+      require("neogit").dispatch_refresh()
+    end)
     return
   end
 
@@ -55,18 +48,6 @@ function M.setup()
         buffer = args.buf,
         nowait = true,
         desc = "Open the file under the cursor in a tmux popup",
-      })
-
-      vim.api.nvim_create_autocmd("BufWipeout", {
-        buffer = args.buf,
-        once = true,
-        callback = function()
-          vim.schedule(function()
-            if #vim.api.nvim_list_wins() == 1 and is_throwaway(vim.api.nvim_get_current_buf()) then
-              vim.cmd("quitall")
-            end
-          end)
-        end,
       })
     end,
   })

@@ -20,7 +20,5 @@ return {
       desc = "Show Neogit UI",
     },
   },
-  opts = {
-    kind = "replace",
-  },
+  opts = {},
 }
