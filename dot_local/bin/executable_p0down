@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# p0down — tear down a p0 app stack completely so a worktree swap is clean.
+#
+# tmuxinator stop only kills the tmux session. Containers started from its panes
+# live in the Docker daemon, outside the session's process tree, so they survive —
+# and p0app-grafana-1 has restart=unless-stopped, so it actively resurrects itself.
+# Leftovers hold ports 6379/8080/8088/4317/4318 and the valkey-data volume, which
+# the *next* worktree then silently binds to.
+#
+# Usage:
+#   p0down                 # stop session + containers, keep data volumes
+#   p0down --purge         # also delete volumes (wipes valkey cache data)
+#   p0down --dry-run       # print what would happen, change nothing
+#   p0down --session NAME  # stop this exact session instead of auto-detecting
+#   p0down --all           # stop every detected stack session
+
+set -uo pipefail
+
+SESSION=""          # empty => auto-detect stack sessions
+PROJECT="p0app"
+REPOS="$HOME/repos"
+CONFIG_REL="backend/scripts/app.tmuxinator.yml"
+PURGE=0
+DRY=0
+ALL=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --purge)     PURGE=1 ;;
+    --dry-run|-n) DRY=1 ;;
+    --session)   SESSION="${2:?--session needs a name}"; shift ;;
+    --all)       ALL=1 ;;
+    -h|--help)   sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "p0down: unknown arg '$1' (try --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+run() {
+  if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi
+}
+
+# macOS ships no coreutils `timeout`, and this script already lost 6 minutes to a
+# wedged child once. Guard every blocking call.
+with_timeout() {
+  local secs="$1"; shift
+  if [ "$DRY" = 1 ]; then printf '  [dry-run] (%ss max) %s\n' "$secs" "$*"; return 0; fi
+  ( eval "$@" ) & local cmd_pid=$!
+  ( sleep "$secs"; kill -0 "$cmd_pid" 2>/dev/null && {
+      printf '\033[33m  timed out after %ss — killing\033[0m\n' "$secs"
+      kill -TERM "$cmd_pid" 2>/dev/null
+      sleep 2; kill -KILL "$cmd_pid" 2>/dev/null
+    } ) & local watch_pid=$!
+  wait "$cmd_pid" 2>/dev/null; local rc=$?
+  kill "$watch_pid" 2>/dev/null; wait "$watch_pid" 2>/dev/null
+  return $rc
+}
+step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+die()  { printf '\033[31mp0down: %s\033[0m\n' "$*" >&2; exit 1; }
+
+[ "$DRY" = 1 ] && printf '\033[33mDRY RUN — nothing will be changed.\033[0m\n'
+
+# ---------------------------------------------------------------- 1. tmux session
+# NOTE: deliberately does NOT use `tmuxinator stop`. app.tmuxinator.yml declares
+#   on_project_exit: [ "$TERM_PROGRAM" = "iTerm.app" ] && tmux -CC attach || tmux attach
+# and tmuxinator runs that hook unconditionally as the last line of its generated
+# script (template.erb:114). `tmux kill-session` does the real work and cannot
+# fire the hook.
+#
+# Sessions are DETECTED, not assumed. A stack session is one whose name is exactly
+# the basename of a worktree holding app.tmuxinator.yml, and all of whose panes sit
+# under that worktree. That separates p0up sessions ("app-3", "app-5") from the
+# long-lived multi-worktree session ("apps") and unrelated ones ("mcp").
+# Hardcoding a default of "app" was a bug: p0up names sessions after the worktree,
+# so the default matched nothing and left every node service running.
+detect_stacks() {
+  local sess root panes ok
+  tmux ls -F '#{session_name}' 2>/dev/null | while read -r sess; do
+    # Resolve session name -> worktree through the real worktree list. The old
+    # "$REPOS/$sess" concat assumed every worktree sits flat in ~/repos, so it
+    # silently missed the nested ones neogit creates at ~/repos/<owner>/<branch>
+    # and reported "no stack session detected" while the stack kept running.
+    # Falls back to the concat if p0name is unavailable, so this can never detect
+    # less than it used to.
+    root=$(p0name --find "$sess" 2>/dev/null)
+    [ -n "$root" ] || root="$REPOS/$sess"
+    [ -f "$root/$CONFIG_REL" ] || continue
+
+    # Every pane must sit inside that worktree. Matched with case rather than a
+    # regex so path metacharacters cannot misfire, and with an explicit boundary
+    # so ~/repos/app does not swallow ~/repos/app-2.
+    panes=0; ok=1
+    while read -r path; do
+      panes=$((panes + 1))
+      case "$path" in
+        "$root"|"$root"/*) ;;
+        *) ok=0; break ;;
+      esac
+    done < <(tmux list-panes -s -t "=$sess:" -F '#{pane_current_path}' 2>/dev/null)
+
+    [ "$panes" -gt 0 ] && [ "$ok" = 1 ] && echo "$sess"
+  done
+}
+
+step "Stopping tmux stack session(s)"
+if [ -n "$SESSION" ]; then
+  TARGETS="$SESSION"
+  echo "  explicit: $SESSION"
+else
+  TARGETS=$(detect_stacks)
+  if [ -z "$TARGETS" ]; then
+    echo "  no stack session detected"
+  elif [ "$(printf '%s\n' "$TARGETS" | wc -l | tr -d ' ')" -gt 1 ] && [ "$ALL" != 1 ]; then
+    printf '\033[33m  multiple stack sessions detected:\033[0m\n'
+    printf '%s\n' "$TARGETS" | sed 's/^/    /'
+    die "pick one with --session NAME, or take down all with --all"
+  else
+    printf '  detected: %s\n' "$(printf '%s\n' "$TARGETS" | paste -sd' ' -)"
+  fi
+fi
+
+# CRITICAL — two separate tmux target footguns, both verified on this machine:
+#   1. `-t app-5` prefix/fnmatch-matches and resolves to session "apps".
+#   2. `=` alone is NOT enough. The "apps" session has WINDOWS named app-1..app-5,
+#      and a window-name match outranks a same-named session, so `-t '=app-5'`
+#      resolves ambiguously (display-message reports '').
+# Only `=NAME:` — exact name AND trailing colon for session scope — resolves to the
+# session reliably. Verified: -t 'app-5' -> apps, -t '=app-5' -> '', -t '=app-5:' -> app-5.
+# Never drop either the '=' or the ':'.
+for t in $TARGETS; do
+  if tmux has-session -t "=$t:" 2>/dev/null; then
+    run "tmux kill-session -t '=$t:'"
+    echo "  session '$t' killed"
+  else
+    echo "  no session named exactly '$t' — left all other sessions alone"
+  fi
+done
+
+# Show what survived, so a wrong --session can never go unnoticed.
+if [ "$DRY" != 1 ]; then
+  printf '  surviving sessions: %s\n' "$(tmux ls -F '#{session_name}' 2>/dev/null | paste -sd' ' - || echo '(tmux server not running)')"
+fi
+
+# ------------------------------------------------------------------- 2. ngrok / op
+step "Stopping ngrok"
+# ngrok is launched as `op plugin run -- ngrok start devproxy`: two PIDs, and SIGHUP
+# to the op wrapper does not reliably reap the ngrok child.
+if pgrep -f 'ngrok start devproxy' >/dev/null 2>&1; then
+  run "pkill -f 'ngrok start devproxy' || true"
+  run "pkill -f 'op plugin run -- ngrok' || true"
+  echo "  ngrok stopped"
+else
+  echo "  ngrok not running"
+fi
+
+# --------------------------------------------------------------- 3. orphaned node
+# The tmux teardown normally reaps these. This is a fallback for `node --watch`
+# children that got reparented to init. Scoped to PPID 1 so we never touch node
+# processes belonging to your other worktrees or editor sessions.
+step "Checking for orphaned node processes"
+ORPHANS=$(ps -eo pid,ppid,command \
+  | awk '$2==1' \
+  | grep -E 'node|vite|esbuild|pino-pretty' \
+  | grep -vE 'grep|Claude|claude|Linear|Slack|Spotify|Firefox' \
+  | awk '{print $1}')
+if [ -n "$ORPHANS" ]; then
+  echo "$ORPHANS" | while read -r p; do
+    ps -o pid,command -p "$p" 2>/dev/null | tail -n +2 | cut -c1-100
+  done
+  run "kill $(echo $ORPHANS | tr '\n' ' ') 2>/dev/null || true"
+  echo "  sent TERM to orphans"
+else
+  echo "  none found"
+fi
+
+# ------------------------------------------------------------------ 4. devproxy
+step "Removing devproxy container"
+# Started with `docker run -d` — detached, so closing its pane never stops it.
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx devproxy; then
+  with_timeout 30 "docker stop devproxy >/dev/null 2>&1 || true"
+  with_timeout 15 "docker rm   devproxy >/dev/null 2>&1 || true"
+  echo "  devproxy removed"
+else
+  echo "  devproxy not present"
+fi
+
+# ------------------------------------------------------- 5. compose project
+step "Bringing down compose project '$PROJECT'"
+# `down` (not `stop`) is required: it removes the containers, which is what defeats
+# grafana's restart=unless-stopped policy. Acts on every profile via container labels,
+# so it works from any worktree without needing the compose file.
+if docker compose -p "$PROJECT" ps -q 2>/dev/null | grep -q .; then
+  if [ "$PURGE" = 1 ]; then
+    printf '\033[31m  --purge: this DELETES volumes (valkey-data will be wiped).\033[0m\n'
+    with_timeout 120 "docker compose -p '$PROJECT' down --remove-orphans --volumes"
+  else
+    with_timeout 120 "docker compose -p '$PROJECT' down --remove-orphans"
+  fi
+  echo "  project '$PROJECT' down"
+else
+  echo "  no running containers in '$PROJECT'"
+fi
+
+# ------------------------------------------------------------------ 6. verify
+if [ "$DRY" = 1 ]; then
+  printf '\n\033[33mDry run complete — nothing changed. Current state left as-is.\033[0m\n'
+  exit 0
+fi
+
+step "Verifying"
+LEFT=$(docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null)
+if [ -n "$LEFT" ]; then
+  printf '\033[33m  containers still running:\033[0m\n'
+  echo "$LEFT" | sed 's/^/    /'
+else
+  echo "  no containers running"
+fi
+
+BUSY=""
+for port in 6379 16379 8080 8088 8079 8081 9001 9002 9003 9004 9005 9006 4317 4318 4000 3000; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    BUSY="$BUSY $port"
+  fi
+done
+if [ -n "$BUSY" ]; then
+  printf '\033[33m  ports still bound:\033[0m%s\n' "$BUSY"
+  for port in $BUSY; do
+    holder=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 \
+             | awk '{print $2}' | sort -u | head -1)
+    [ -n "$holder" ] && printf '    %-6s pid=%-7s %s\n' "$port" "$holder" \
+      "$(ps -o command= -p "$holder" 2>/dev/null | cut -c1-64)"
+  done
+  echo "    hint: a stack session may still be up — 'tmux ls', then --session NAME"
+else
+  echo "  all stack ports free"
+fi
+
+if [ -z "$LEFT" ] && [ -z "$BUSY" ]; then
+  printf '\n\033[32mDone — stack fully down, safe to switch worktrees.\033[0m\n'
+else
+  printf '\n\033[33mDone, but leftovers remain (see above) — check before switching.\033[0m\n'
+  exit 1
+fi

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# p0init — make a fresh worktree usable: submodules, env file, dependencies.
+#
+# `git worktree add` gives you a checkout with EMPTY submodules (all five are
+# separate repos) and no node_modules, so a new worktree can neither build nor
+# run until both are filled in. Run automatically by the NeogitWorktreeCreate
+# autocmd; idempotent, so it is safe to re-run by hand at any time.
+#
+# Node is pinned from .nvmrc explicitly rather than inherited, so the install
+# cannot depend on how p0init was invoked. A non-interactive caller gets whatever
+# PATH the tmux server was started with, which goes stale across a node upgrade;
+# `nvm use` reads .nvmrc and is authoritative either way.
+#
+# No masking step: docs/MONOREPO.md still describes ./submodule-mask.sh, but
+# those scripts were deleted in 294bb0ea8 ("Reapply workspace setup", #4612) and
+# the tree is clean without them.
+#
+# Git hooks need no step either — core.hooksPath=.husky lives in the shared repo
+# config and .husky is tracked, so a new worktree picks them up on its own.
+#
+# Usage:
+#   p0init              # current worktree
+#   p0init app-3        # a worktree by name under ~/repos, or an absolute path
+#   p0init --dry-run    # print the plan, change nothing
+
+set -uo pipefail
+
+REPOS="${P0_REPOS:-$HOME/repos}"
+TARGET=""; DRY=0
+
+die()  { printf '\033[31mp0init: %s\033[0m\n' "$*" >&2; exit 1; }
+step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+run()  { if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)        die "unknown flag '$1' (try --help)" ;;
+    *)         [ -n "$TARGET" ] && die "more than one worktree given"; TARGET="$1" ;;
+  esac
+  shift
+done
+
+# ------------------------------------------------------------- resolve target
+if [ -z "$TARGET" ]; then
+  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || die "not in a git worktree — pass one explicitly, e.g. 'p0init app-3'"
+else
+  case "$TARGET" in
+    /*) ROOT="$TARGET" ;;
+    *)  ROOT="$REPOS/$TARGET" ;;
+  esac
+fi
+
+[ -d "$ROOT" ] || die "no such directory: $ROOT"
+ROOT=$(cd "$ROOT" && pwd -P)
+[ -f "$ROOT/package.json" ] || die "no package.json under $ROOT — is this an app worktree?"
+
+step "Target"
+echo "  worktree: $ROOT"
+echo "  branch:   $(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+
+# ----------------------------------------------------------------- submodules
+# --init picks up any submodule the branch adds; --recursive covers nesting.
+step "Submodules"
+if [ -f "$ROOT/.gitmodules" ]; then
+  run "git -C '$ROOT' submodule update --init --recursive"
+  [ "$DRY" = 1 ] || git -C "$ROOT" submodule status | sed 's/^/  /'
+else
+  echo "  no .gitmodules — nothing to do"
+fi
+
+# ------------------------------------------------------------------ env file
+# .env.yarn is tracked, but .env.yarn.local is gitignored, so a fresh worktree
+# starts without it and .yarnrc.yml's injectEnvironmentFiles has nothing to
+# inject. Seed it from the main worktree. Never overwrite an existing one.
+step "Environment"
+MAIN=$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+if [ -f "$ROOT/.env.yarn.local" ]; then
+  echo "  .env.yarn.local already present"
+elif [ -n "$MAIN" ] && [ -f "$MAIN/.env.yarn.local" ]; then
+  run "cp '$MAIN/.env.yarn.local' '$ROOT/.env.yarn.local'"
+  echo "  seeded .env.yarn.local from $MAIN"
+else
+  echo "  no .env.yarn.local to copy (looked in ${MAIN:-?})"
+fi
+
+# ----------------------------------------------------------------------- node
+# Selected from .nvmrc, not inherited. nvm is a shell function, so it has to be
+# sourced here; without this the version depends on the calling shell.
+step "Node"
+if [ -f "$ROOT/.nvmrc" ]; then
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$NVM_DIR/nvm.sh"
+    if [ "$DRY" = 1 ]; then
+      printf '  [dry-run] nvm use (.nvmrc pins %s)\n' "$(head -1 "$ROOT/.nvmrc")"
+    else
+      ( cd "$ROOT" && nvm use ) 2>&1 | sed 's/^/  /' \
+        || die "nvm could not select $(head -1 "$ROOT/.nvmrc") — try 'nvm install'"
+      cd "$ROOT" && nvm use >/dev/null 2>&1
+    fi
+  else
+    printf '\033[33m  nvm not found at %s — using whatever node is on PATH\033[0m\n' "$NVM_DIR"
+  fi
+fi
+[ "$DRY" = 1 ] || echo "  node: $(command -v node) ($(node -v 2>/dev/null || echo '?'))"
+
+# ---------------------------------------------------------------- dependencies
+# Plain `yarn install` per README.md:186 — not --immutable, because a branch may
+# legitimately be mid-change on yarn.lock.
+step "Dependencies"
+if [ "$DRY" = 1 ]; then
+  printf '  [dry-run] cd %s && yarn install\n' "$ROOT"
+else
+  ( cd "$ROOT" && yarn install ) || die "yarn install failed — fix, then re-run p0init"
+fi
+
+step "Ready"
+if [ "$DRY" = 1 ]; then
+  printf '\033[33mDry run — nothing changed.\033[0m\n'
+else
+  echo "  $ROOT is ready"
+fi

@@ -1,6 +1,6 @@
 require("simon.remap")
 require("simon.tmux").setup_child()
-require("simon.neogit").setup()
+require("simon.lsp_idle").setup({ idle_minutes = 15 })
 
 vim.g.clipboard = "osc52"
 vim.opt.clipboard = "unnamedplus"

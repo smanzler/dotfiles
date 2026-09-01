@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# p0finish — done with a worktree? Run this. One command, nothing to remember.
+#
+# The mental model: a WORKTREE is free, what you ATTACH to it is not.
+#   worktree dir      3.5GB disk, 0 RAM   -> keep it (you have 722GB free)
+#   tmux window       ~kilobytes          -> keep it (that's your navigation)
+#   nvim + LSPs       3-5GB               -> close it   <- the actual cost
+#   dev stack         1-2GB + containers  -> close it   <- the actual cost
+#   claude session    ~130-370MB          -> your call, holds conversation state
+#
+# So this does NOT delete worktrees or tmux windows. Deleting those buys nothing
+# and costs you a yarn install and an LSP cold start next time.
+#
+#   p0finish              # finish the current worktree
+#   p0finish app-3        # finish that one
+#   p0finish app-3 --claude   # also close its Claude sessions
+#   p0finish app-3 --window   # ALSO remove its tmux window (worktree is going away)
+#   p0finish --dry-run
+#
+# --window is for the delete case only. It refuses if an editor was left running
+# with unsaved work, and exits non-zero, so a caller can abort the removal.
+
+set -uo pipefail
+
+REPOS="$HOME/repos"
+TARGET=""; DRY=0; DO_CLAUDE=0; DO_WINDOW=0
+
+step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+die()  { printf '\033[31mp0finish: %s\033[0m\n' "$*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --claude)     DO_CLAUDE=1 ;;
+    --window)     DO_WINDOW=1 ;;
+    --dry-run|-n) DRY=1 ;;
+    -h|--help)    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)           die "unknown flag '$1'" ;;
+    *)            [ -n "$TARGET" ] && die "one worktree at a time"; TARGET="$1" ;;
+  esac
+  shift
+done
+
+if [ -z "$TARGET" ]; then
+  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a worktree; pass one, e.g. p0finish app-3"
+else
+  # Nested worktrees (~/repos/<owner>/<branch>) are not under ~/repos directly,
+  # so fall back to the worktree list when the plain path is not a directory.
+  case "$TARGET" in
+    /*) ROOT="$TARGET" ;;
+    *)  ROOT="$REPOS/$TARGET"
+        [ -d "$ROOT" ] || ROOT=$(p0name --find "$TARGET" 2>/dev/null) || ROOT="$REPOS/$TARGET" ;;
+  esac
+fi
+[ -d "$ROOT" ] || die "no such directory: $ROOT"
+ROOT=$(cd "$ROOT" && pwd -P)
+NAME=$(p0name "$ROOT" 2>/dev/null)
+[ -n "$NAME" ] || NAME=$(basename "$ROOT")
+
+step "Finishing $NAME"
+echo "  $ROOT"
+echo "  branch: $(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+[ "$DRY" = 1 ] && printf '\033[33m  DRY RUN — nothing will be changed\033[0m\n'
+
+freed=0
+blocked=0   # set when something was left running, so --window can refuse
+
+# Our own process chain: p0finish must never close the editor or shell that
+# launched it. Walked once here because both the editor and Claude steps need it.
+SELF_CHAIN=" "; cur=$$
+for _ in 1 2 3 4 5 6 7 8; do
+  [ -z "$cur" ] || [ "$cur" = "1" ] && break
+  SELF_CHAIN="$SELF_CHAIN$cur "; cur=$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')
+done
+
+# ---------------------------------------------------------------- 1. dev stack
+step "Dev stack"
+if command -v p0down >/dev/null 2>&1; then
+  # Scoped to THIS worktree: its own stack session, or leftovers in the p0app
+  # compose project. The old test was `docker ps -q | grep -q .`, which fired on
+  # any container on the machine — an unrelated project was enough to trigger a
+  # p0down that then killed ngrok, devproxy and p0app for a DIFFERENT worktree's
+  # running stack. That matters more now the delete hook calls this unattended.
+  if tmux has-session -t "=$NAME:" 2>/dev/null \
+     || docker compose -p p0app ps -q 2>/dev/null | grep -q .; then
+    if [ "$DRY" = 1 ]; then
+      echo "  [dry-run] p0down --session $NAME"
+    else
+      p0down --session "$NAME" 2>&1 | sed 's/^/  /'
+    fi
+  else
+    echo "  nothing running"
+  fi
+else
+  echo "  p0down not found — skipping"
+fi
+
+# ------------------------------------------------------------------- 2. nvim
+# nvim always starts a server socket at $TMPDIR/nvim.$USER/*/nvim.<pid>.0, so each
+# instance can be asked whether it has unsaved work before we touch it. Only real
+# file buffers count: buftype must be empty, which excludes terminal/quickfix/help
+# scratch buffers (Neogit's console shows as modified but is a terminal buffer).
+step "Editors"
+found_nvim=0
+for sock in "${TMPDIR}"nvim.$USER/*/nvim.*.0; do
+  [ -S "$sock" ] || continue
+  pid=$(basename "$sock" | sed 's/nvim\.\([0-9]*\)\.0/\1/')
+  ps -p "$pid" >/dev/null 2>&1 || continue
+  # Before any RPC: never talk to the editor that launched us. If p0finish was
+  # started from nvim (the worktree-delete hook does exactly that), that instance
+  # is blocked waiting on this script, so --remote-expr would hang forever and
+  # deadlock both sides.
+  case " $SELF_CHAIN " in
+    *" $pid "*) printf '\033[36m  pid=%s is this editor — never touched\033[0m\n' "$pid"; continue ;;
+  esac
+  cwd=$(nvim --server "$sock" --remote-expr 'getcwd()' 2>/dev/null) || continue
+  case "$cwd" in "$ROOT"|"$ROOT"/*) ;; *) continue ;; esac
+  found_nvim=1
+  rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' '); rss=${rss:-0}
+
+  dirty=$(nvim --server "$sock" --remote-expr \
+    'len(filter(getbufinfo({"bufmodified":1}), "v:val.name != \"\" && getbufvar(v:val.bufnr, \"&buftype\") == \"\""))' 2>/dev/null)
+  dirty=${dirty:-0}
+
+  if [ "$dirty" -gt 0 ] 2>/dev/null; then
+    files=$(nvim --server "$sock" --remote-expr \
+      'join(map(filter(getbufinfo({"bufmodified":1}), "v:val.name != \"\" && getbufvar(v:val.bufnr, \"&buftype\") == \"\""), "fnamemodify(v:val.name, \":~:.\")"), ", ")' 2>/dev/null)
+    printf '\033[33m  pid=%s has %s UNSAVED file(s) — left running\033[0m\n' "$pid" "$dirty"
+    printf '    %s\n' "$files"
+    echo "    save them, then rerun p0finish"
+    blocked=1
+    continue
+  fi
+
+  # LSP children (vtsls/eslint) exit with their parent; count them for the total
+  lsp=$(pgrep -P "$pid" 2>/dev/null | while read -r c; do ps -o rss= -p "$c" 2>/dev/null; done | awk '{s+=$1} END{print s+0}')
+  if [ "$DRY" = 1 ]; then
+    echo "  [dry-run] would close nvim pid=$pid (clean) — $(( (rss + lsp) / 1024 ))MB incl. children"
+  else
+    nvim --server "$sock" --remote-send '<C-\><C-N>:qa!<CR>' 2>/dev/null
+    sleep 1
+    if ps -p "$pid" >/dev/null 2>&1; then
+      kill "$pid" 2>/dev/null; sleep 1
+    fi
+    ps -p "$pid" >/dev/null 2>&1 \
+      && { printf '\033[33m  pid=%s did not exit\033[0m\n' "$pid"; blocked=1; } \
+      || { echo "  closed nvim pid=$pid ($(( (rss + lsp) / 1024 ))MB incl. language servers)"
+           freed=$(( freed + rss + lsp )); }
+  fi
+done
+[ "$found_nvim" = 0 ] && echo "  no nvim in this worktree"
+
+# ------------------------------------------------------------------ 3. claude
+step "Claude sessions"
+PANES=$(mktemp); trap 'rm -f "$PANES"' EXIT
+tmux list-panes -a -F '#{pane_pid}|#{session_name}:#{window_name}|#{pane_current_path}' 2>/dev/null > "$PANES" || true
+
+found_claude=0
+while IFS= read -r cpid; do
+  [ -n "$cpid" ] || continue
+  # walk up to the owning pane, then check that pane's path
+  cur="$cpid"; pane=""; ppath=""
+  for _ in 1 2 3 4 5 6 7 8; do
+    cur=$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')
+    [ -z "$cur" ] || [ "$cur" = "1" ] && break
+    hit=$(grep "^$cur|" "$PANES" 2>/dev/null | head -1)
+    if [ -n "$hit" ]; then pane=$(echo "$hit" | cut -d'|' -f2); ppath=$(echo "$hit" | cut -d'|' -f3); break; fi
+  done
+  case "$ppath" in "$ROOT"|"$ROOT"/*) ;; *) continue ;; esac
+  found_claude=1
+  rss=$(ps -o rss= -p "$cpid" 2>/dev/null | tr -d ' '); rss=${rss:-0}
+  age=$(ps -o etime= -p "$cpid" 2>/dev/null | tr -d ' ')
+  case " $SELF_CHAIN " in
+    *" $cpid "*) printf '\033[36m  pid=%-7s %-16s %5dMB  this session — never touched\033[0m\n' "$cpid" "$pane" "$((rss/1024))"; continue ;;
+  esac
+  if [ "$DO_CLAUDE" = 1 ]; then
+    if [ "$DRY" = 1 ]; then
+      echo "  [dry-run] would close claude pid=$cpid ($pane, $((rss/1024))MB)"
+    else
+      kill "$cpid" 2>/dev/null && { echo "  closed claude pid=$cpid ($pane, $((rss/1024))MB)"; freed=$((freed + rss)); }
+    fi
+  else
+    printf '  pid=%-7s %-16s %5dMB  up %s\n' "$cpid" "$pane" "$((rss/1024))" "$age"
+  fi
+done < <(ps -eo pid,comm | awk '{n=$2; sub(/.*\//,"",n); if (n=="claude") print $1}')
+
+if [ "$found_claude" = 0 ]; then
+  echo "  none in this worktree"
+elif [ "$DO_CLAUDE" != 1 ]; then
+  echo "  (left alone — they hold conversation state. use --claude to close them)"
+fi
+
+# ------------------------------------------------------------------ 4. window
+# Kept by default: a window is kilobytes and it is your navigation. --window is
+# for the worktree-is-going-away case, where the window would otherwise be left
+# pointing at a path that no longer exists. Killing it SIGHUPs the pane, which
+# takes down whatever else was running in there.
+step "Tmux window"
+if [ "$DO_WINDOW" != 1 ]; then
+  echo "  kept (pass --window to remove it)"
+elif [ "$blocked" = 1 ]; then
+  printf '\033[31m  refusing — something above was left running\033[0m\n'
+  echo "  the window still points at a live worktree; nothing was removed"
+  exit 1
+else
+  # Targeted by window_id (@N), not index: renumber-windows shifts indices as
+  # soon as the first window dies.
+  self_win=""
+  [ -n "${TMUX_PANE:-}" ] && \
+    self_win=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)
+  found_win=0; seen=" "
+  while IFS='|' read -r wid label wpath; do
+    case "$wpath" in "$ROOT"|"$ROOT"/*) ;; *) continue ;; esac
+    case "$seen" in *" $wid "*) continue ;; esac   # one row per pane; dedupe
+    seen="$seen$wid "
+    found_win=1
+    if [ "$wid" = "$self_win" ]; then
+      printf '\033[33m  %s is this pane — close it after this exits: prefix &\033[0m\n' "$label"
+      continue
+    fi
+    if [ "$DRY" = 1 ]; then
+      echo "  [dry-run] tmux kill-window -t '$wid' ($label)"
+    else
+      tmux kill-window -t "$wid" 2>/dev/null && echo "  killed $label"
+    fi
+  done < <(tmux list-panes -a -F '#{window_id}|#{session_name}:#{window_name}|#{pane_current_path}' 2>/dev/null)
+  [ "$found_win" = 0 ] && echo "  no window in this worktree"
+fi
+
+# ------------------------------------------------------------------ summary
+step "Done"
+[ "$freed" -gt 0 ] && printf '  reclaimed ~%dMB\n' "$((freed/1024))"
+echo "  kept on purpose:"
+echo "    worktree $ROOT  (0 RAM; deleting it costs you a yarn install)"
+[ "$DO_WINDOW" = 1 ] || echo "    its tmux window                (kilobytes; that's your navigation)"
+printf '  swap: %s\n' "$(sysctl -n vm.swapusage | sed 's/total = /total /; s/used = /used /; s/free = .*//')"

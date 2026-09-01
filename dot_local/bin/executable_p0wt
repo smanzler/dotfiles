@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# p0wt — create and manage app worktrees. The front door; p0finish is the back one.
+#
+# A worktree's path IS its branch: refs/heads/simonmanzler/eng-8346-foo lives at
+# ~/repos/simonmanzler/eng-8346-foo. That one rule makes the mapping reversible
+# without any state file, and it is already how 5 of the existing worktrees are
+# laid out. p0name shortens the path to the ticket for tmux/status-bar use.
+#
+# Usage:
+#   p0wt                        # list (same as `p0wt list`)
+#   p0wt new BRANCH             # worktree for BRANCH + tmux window + p0init
+#   p0wt new BRANCH --switch    # ...and jump to the window
+#   p0wt new BRANCH --base main # branch off something other than the current dir
+#   p0wt go NAME                # focus (or open) a worktree's tmux window
+#   p0wt rm NAME                # p0finish --window, then delete the worktree
+#   p0wt doctor                 # prune stale registrations, report unbootstrapped
+#   p0wt <cmd> --dry-run        # print the plan, change nothing
+#
+# `new` auto-detects: an existing local or origin branch is checked out, anything
+# else is created off the current directory's branch. It never guesses silently —
+# every run prints which of the three it picked and what it branched from.
+
+set -uo pipefail
+
+REPOS="${P0_REPOS:-$HOME/repos}"
+REMOTE="${P0_REMOTE:-origin}"
+DRY=0
+
+step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+info() { printf '  %s\n' "$*"; }
+warn() { printf '\033[33m  %s\033[0m\n' "$*"; }
+die()  { printf '\033[31mp0wt: %s\033[0m\n' "$*" >&2; exit 1; }
+run()  { if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ---------------------------------------------------------------- repo context
+# Every worktree of a repo can list all the others, so any one of them works as
+# an entry point. Prefer the cwd's so `p0wt` is usable from a worktree that is
+# not under $REPOS at all; fall back to $REPOS/app for a bare shell.
+git_entry() {
+  local root
+  if root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    printf '%s\n' "$root"
+    return 0
+  fi
+  if [ -e "$REPOS/app/.git" ]; then
+    printf '%s\n' "$REPOS/app"
+    return 0
+  fi
+  return 1
+}
+
+# The repo's main worktree — first entry of `worktree list`, same as p0init uses.
+main_worktree() {
+  git -C "$1" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}'
+}
+
+worktree_dirs() {
+  git -C "$1" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}'
+}
+
+branch_of() {
+  git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null
+}
+
+# Short name, via p0name so there is exactly one implementation of the mapping.
+short_name() {
+  local n
+  n=$(p0name "$1" 2>/dev/null) && [ -n "$n" ] && { printf '%s\n' "$n"; return 0; }
+  basename "$1"
+}
+
+# ----------------------------------------------------------------------- tmux
+# Window targets are "=session:name" and session targets "=name:". Both the '='
+# and the trailing ':' matter: bare -t prefix-matches, and '=' alone still loses
+# to a same-named window in another session. p0up/p0down document the same trap.
+in_tmux() { [ -n "${TMUX:-}" ]; }
+
+current_session() {
+  tmux display-message -p -t "${TMUX_PANE:-}" '#S' 2>/dev/null
+}
+
+window_exists() {
+  tmux select-window -t "=$1:$2" >/dev/null 2>&1
+}
+
+# Focus the window for a worktree, creating it if absent. Idempotent, so calling
+# it twice jumps rather than stacking duplicates. A command is only sent when we
+# created the window — send-keys into an existing one would type into whatever is
+# running there. send-keys rather than a window command so it lands in the real
+# interactive shell, with nvm and PATH set up the way tmuxinator drives its panes.
+# Sets WINDOW_STATE to created | existing | none, so a caller can tell whether
+# the command it passed actually ran.
+WINDOW_STATE=none
+open_window() {
+  local dir="$1" name="$2" detach="${3:-1}" command="${4:-}"
+  local session args
+
+  WINDOW_STATE=none
+  in_tmux || { warn "not inside tmux — no window opened"; return 1; }
+  session=$(current_session) || { warn "cannot resolve tmux session"; return 1; }
+
+  if window_exists "$session" "$name"; then
+    WINDOW_STATE=existing
+    info "window '$name' already exists — focused it"
+    return 0
+  fi
+
+  args="new-window -a -t '=$session:' -c '$dir' -n '$name'"
+  [ "$detach" = 1 ] && args="$args -d"
+  run "tmux $args" || return 1
+
+  if [ -n "$command" ]; then
+    run "tmux send-keys -t '=$session:$name' $(printf '%q' "$command") Enter"
+  fi
+
+  WINDOW_STATE=created
+  info "window '$name' created$([ "$detach" = 1 ] && echo ' (detached)')"
+}
+
+# --------------------------------------------------------------------- new
+cmd_new() {
+  local branch="" base="" switch=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --switch|-s) switch=1 ;;
+      --base)      base="${2:?--base needs a ref}"; shift ;;
+      --dry-run|-n) DRY=1 ;;
+      -*)          die "unknown flag '$1' (try --help)" ;;
+      *)           [ -n "$branch" ] && die "one branch at a time"; branch="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$branch" ] || die "which branch? e.g. p0wt new simonmanzler/eng-1234-thing"
+
+  local entry dir
+  entry=$(git_entry) || die "not in a git worktree and no $REPOS/app to fall back on"
+  dir="$REPOS/$branch"
+
+  step "Target"
+  info "branch:   $branch"
+  info "worktree: $dir"
+
+  # An existing directory is either the worktree we want (jump to it) or an
+  # unrelated collision (refuse rather than clobber).
+  if [ -e "$dir" ]; then
+    if [ "$(branch_of "$dir")" = "$branch" ]; then
+      info "already exists on this branch — opening its window"
+      open_window "$dir" "$(short_name "$dir")" "$([ "$switch" = 1 ] && echo 0 || echo 1)"
+      exit 0
+    fi
+    die "$dir exists and is not on $branch — move it aside first"
+  fi
+
+  step "Fetching $REMOTE"
+  run "git -C '$entry' fetch --prune '$REMOTE'"
+
+  # ------------------------------------------------------- pick the source ref
+  local mode add_args
+  if git -C "$entry" show-ref --verify --quiet "refs/heads/$branch"; then
+    mode="existing local branch"
+    # Refuse early with a useful message: git's own error for this is opaque.
+    local held
+    held=$(git -C "$entry" worktree list --porcelain \
+      | awk -v b="refs/heads/$branch" '/^worktree /{w=$2} $0=="branch "b{print w}')
+    [ -n "$held" ] && die "$branch is already checked out at $held (try: p0wt go $(short_name "$held"))"
+    add_args="'$dir' '$branch'"
+  elif git -C "$entry" show-ref --verify --quiet "refs/remotes/$REMOTE/$branch"; then
+    mode="existing $REMOTE branch"
+    add_args="--track -b '$branch' '$dir' '$REMOTE/$branch'"
+  else
+    mode="new branch"
+    local base_ref base_desc
+    if [ -n "$base" ]; then
+      base_ref="$base"; base_desc="$base (--base)"
+    else
+      # Base off the current directory's branch, per the "branch in the current
+      # dir" rule. If that branch is strictly behind its upstream, branch from
+      # the upstream instead so a new ticket does not start stale; if it has
+      # local commits, keep them. Either way, say which.
+      local cur counts ahead behind
+      cur=$(branch_of "$entry") || die "cannot resolve the current branch"
+      base_ref="HEAD"; base_desc="$cur (local HEAD)"
+      if counts=$(git -C "$entry" rev-list --left-right --count "HEAD...@{u}" 2>/dev/null); then
+        ahead=${counts%%[[:space:]]*}; behind=${counts##*[[:space:]]}
+        if [ "$ahead" = 0 ] && [ "$behind" -gt 0 ]; then
+          base_ref="@{u}"; base_desc="$REMOTE/$cur ($cur was $behind behind)"
+        elif [ "$ahead" -gt 0 ]; then
+          base_desc="$cur (local HEAD, $ahead unpushed)"
+        fi
+      fi
+    fi
+    info "base:     $base_desc"
+    add_args="-b '$branch' '$dir' '$base_ref'"
+  fi
+  info "mode:     $mode"
+
+  step "Creating worktree"
+  run "git -C '$entry' worktree add $add_args" || die "git worktree add failed"
+
+  step "tmux window"
+  local name
+  name=$(short_name "$dir")
+  # p0init is slow (submodules + yarn install), so the window starts detached and
+  # you carry on where you are. The pane shows the full command, re-runnable as-is.
+  open_window "$dir" "$name" "$([ "$switch" = 1 ] && echo 0 || echo 1)" \
+    "p0init $(printf '%q' "$dir")"
+
+  step "Ready"
+  if [ "$DRY" = 1 ]; then
+    warn "Dry run — nothing changed."
+    return 0
+  fi
+
+  info "$dir on $branch"
+  if [ "$WINDOW_STATE" = created ]; then
+    info "p0init is running in window '$name'"
+  else
+    # No window means nothing ran p0init, and the worktree is unusable until it
+    # does, so hand over the exact command instead of implying it is underway.
+    info "not bootstrapped yet — run: p0init $dir"
+  fi
+}
+
+# -------------------------------------------------------------------- list
+cmd_list() {
+  local entry
+  entry=$(git_entry) || die "not in a git worktree and no $REPOS/app to fall back on"
+
+  local session=""
+  in_tmux && session=$(current_session)
+
+  printf '\033[1m%-14s %-6s %-5s %s\033[0m\n' NAME WINDOW INIT BRANCH
+  while read -r dir; do
+    local name win init branch
+    name=$(short_name "$dir")
+    branch=$(branch_of "$dir")
+
+    win="-"
+    [ -n "$session" ] && window_exists "$session" "$name" && win="yes"
+
+    # "init" means p0init has been run: node_modules is the expensive half and
+    # the one that makes the worktree actually usable.
+    init="no"
+    [ -d "$dir/node_modules" ] && init="yes"
+
+    printf '%-14s %-6s %-5s %s\n' "$name" "$win" "$init" "${branch:-?}"
+  done < <(worktree_dirs "$entry")
+}
+
+# ---------------------------------------------------------------------- go
+cmd_go() {
+  local want=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run|-n) DRY=1 ;;
+      -*) die "unknown flag '$1'" ;;
+      *)  [ -n "$want" ] && die "one worktree at a time"; want="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$want" ] || die "which worktree? (see: p0wt list)"
+
+  local dir
+  dir=$(p0name --find "$want" 2>/dev/null) \
+    || die "no worktree named '$want' (see: p0wt list)"
+
+  open_window "$dir" "$(short_name "$dir")" 0
+}
+
+# ---------------------------------------------------------------------- rm
+cmd_rm() {
+  local want="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force|-f)   force=1 ;;
+      --dry-run|-n) DRY=1 ;;
+      -*) die "unknown flag '$1'" ;;
+      *)  [ -n "$want" ] && die "one worktree at a time"; want="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$want" ] || die "which worktree? (see: p0wt list)"
+
+  local entry dir main
+  entry=$(git_entry) || die "not in a git worktree"
+  dir=$(p0name --find "$want" 2>/dev/null) || die "no worktree named '$want'"
+  main=$(main_worktree "$entry")
+
+  [ "$dir" = "$main" ] && die "$dir is the main worktree — not removing that"
+  case "$PWD/" in
+    "$dir"/*) die "you are inside $dir — cd out first" ;;
+  esac
+
+  step "Target"
+  info "worktree: $dir"
+  info "branch:   $(branch_of "$dir")"
+
+  # p0finish owns teardown and refuses (non-zero) when an editor holds unsaved
+  # work, which is exactly the signal to abort before touching the checkout.
+  step "Closing editors, stack and window"
+  if [ "$DRY" = 1 ]; then
+    info "[dry-run] p0finish --window $dir"
+  elif command -v p0finish >/dev/null 2>&1; then
+    p0finish --window "$dir" || die "p0finish refused — worktree left alone"
+  else
+    warn "p0finish not on PATH — skipping teardown"
+  fi
+
+  step "Removing worktree"
+  local rm_args="'$dir'"
+  [ "$force" = 1 ] && rm_args="--force $rm_args"
+  run "git -C '$entry' worktree remove $rm_args" \
+    || die "git worktree remove failed (uncommitted changes? re-run with --force)"
+
+  step "Done"
+  if [ "$DRY" = 1 ]; then
+    warn "Dry run — nothing changed."
+  else
+    info "$dir removed"
+  fi
+}
+
+# ------------------------------------------------------------------ doctor
+cmd_doctor() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run|-n) DRY=1 ;;
+      *) die "unknown arg '$1'" ;;
+    esac
+    shift
+  done
+
+  local entry
+  entry=$(git_entry) || die "not in a git worktree"
+
+  step "Stale registrations"
+  local stale
+  stale=$(git -C "$entry" worktree prune --dry-run --verbose 2>/dev/null)
+  if [ -n "$stale" ]; then
+    printf '%s\n' "$stale" | sed 's/^/  /'
+    run "git -C '$entry' worktree prune"
+  else
+    info "none"
+  fi
+
+  step "Bootstrap state"
+  local problems=0
+  while read -r dir; do
+    local missing=()
+    [ -d "$dir/node_modules" ] || missing+=(node_modules)
+    [ -f "$dir/.env.yarn.local" ] || missing+=(.env.yarn.local)
+    # An uninitialised submodule shows as "-<sha>" in `submodule status`.
+    if [ -f "$dir/.gitmodules" ] && git -C "$dir" submodule status 2>/dev/null | grep -q '^-'; then
+      missing+=(submodules)
+    fi
+    if [ ${#missing[@]} -gt 0 ]; then
+      problems=$((problems + 1))
+      printf '  \033[33m%-14s missing: %s\033[0m\n' "$(short_name "$dir")" "${missing[*]}"
+      printf '                 fix: p0init %s\n' "$dir"
+    fi
+  done < <(worktree_dirs "$entry")
+  [ "$problems" = 0 ] && info "every worktree is bootstrapped"
+}
+
+# ------------------------------------------------------------------- dispatch
+case "${1:-list}" in
+  new)            shift; cmd_new "$@" ;;
+  go|switch)      shift; cmd_go "$@" ;;
+  rm|remove)      shift; cmd_rm "$@" ;;
+  doctor)         shift; cmd_doctor "$@" ;;
+  list|ls)        shift; cmd_list "$@" ;;
+  -h|--help|help) usage ;;
+  # No bare-branch shorthand on purpose: `p0wt eng-8346` reads equally as "go
+  # there" and "make that", and guessing wrong either creates junk or does nothing.
+  *)              die "unknown command '$1' (try --help)" ;;
+esac

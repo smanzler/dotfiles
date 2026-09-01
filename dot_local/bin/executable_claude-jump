@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# claude-jump — every Claude Code session running in tmux, newest first. Jump to one.
+#
+#   claude-jump          # picker
+#   claude-jump --status # sort by status instead of recency
+#   claude-jump --plain  # print the table, no picker
+#
+# Recency is the last write to a transcript in the session working directory, so it
+# tracks the last thing you or Claude said. Two sessions in one directory share that
+# time, and a session with no transcript falls back to tmux window activity.
+#
+# Status is read off the pane screen: input = Claude is waiting for an answer,
+# busy = it is working, draft = unsent text in the prompt, idle = your turn.
+#
+# In the picker: enter jumps to the pane, alt-a / alt-s re-sort, ctrl-r refreshes.
+
+set -uo pipefail
+
+SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+PANE_FMT='#{pane_id}	#{session_name}	#{window_index}	#{pane_index}	#{window_name}	#{pane_pid}	#{window_activity}'
+
+die() { echo "claude-jump: $*" >&2; exit 1; }
+
+# pane_id, claude_pid, rss_kb, window_activity, target, window for every pane that
+# has a claude anywhere in its process subtree.
+claude_panes() {
+  local panes
+  panes=$(mktemp) || die "cannot make a temp file"
+  tmux list-panes -a -F "$PANE_FMT" > "$panes" 2>/dev/null || die "no tmux server running"
+  ps -axo pid=,ppid=,rss=,comm= | awk -v panes="$panes" '
+    function walk(p,   i, k, m) {
+      if (seen[p]) return
+      seen[p] = 1
+      if (comm[p] == "claude" && rss[p] > best_rss) { best_rss = rss[p]; best_pid = p }
+      m = split(kids[p], k, " ")
+      for (i = 1; i <= m; i++) walk(k[i])
+    }
+    BEGIN {
+      while ((getline line < panes) > 0) {
+        if (split(line, f, "\t") < 7) continue
+        np++
+        p_id[np] = f[1]; p_tgt[np] = f[2] ":" f[3] "." f[4]
+        p_win[np] = f[5]; p_pid[np] = f[6]; p_act[np] = f[7]
+      }
+      close(panes)
+    }
+    {
+      rss[$1] = $3
+      kids[$2] = kids[$2] " " $1
+      c = $0
+      sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[0-9]+[ \t]+/, "", c)
+      sub(/.*\//, "", c)
+      comm[$1] = c
+    }
+    END {
+      for (i = 1; i <= np; i++) {
+        split("", seen)
+        best_rss = -1; best_pid = ""
+        walk(p_pid[i])
+        if (best_pid != "")
+          printf "%s\t%s\t%d\t%s\t%s\t%s\n", p_id[i], best_pid, best_rss, p_act[i], p_tgt[i], p_win[i]
+      }
+    }
+  '
+  rm -f "$panes"
+}
+
+# What the pane screen says the session is doing: rank, label, one line of context.
+pane_state() {
+  tmux capture-pane -p -t "$1" 2>/dev/null | awk '
+    /esc to interrupt/                                     { busy = 1 }
+    /Do you want|Would you like|Continue\?|❯ [0-9]+\./     { ask = 1 }
+    /Do you want|Would you like|Continue\?/                { q = $0 }
+    /…[ ]*\(/                                              { spin = $0 }
+    /^[[:space:]]*⏺[[:space:]]/                            { did = $0 }
+    /^[[:space:]]*[✻✳][[:space:]]/                          { summary = $0 }
+    /^[[:space:]]*❯[[:space:]]+[^[:space:]]/               { draft = $0 }
+    function clean(s) {
+      sub(/^[[:space:]]*[⏺✻✳·❯*✽✢][[:space:]]*/, "", s)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      gsub(/[[:space:]]+/, " ", s)
+      return s
+    }
+    END {
+      if (ask)        printf "0\tinput\t%s\n", clean(q ? q : "waiting for an answer")
+      else if (busy)  printf "1\tbusy\t%s\n", clean(spin ? spin : "working")
+      else if (draft) printf "2\tdraft\t%s\n", clean(draft)
+      else            printf "3\tidle\t%s\n", clean(did ? did : summary)
+    }
+  '
+}
+
+# Newest transcript write for a working directory, 0 when there is no transcript.
+last_message() {
+  local slug newest
+  slug=$(printf '%s' "$1" | sed 's/[/.]/-/g')
+  newest=$(ls -t "$HOME/.claude/projects/$slug"/*.jsonl 2>/dev/null | head -1)
+  [ -n "$newest" ] && stat -f %m "$newest" 2>/dev/null || echo 0
+}
+
+# pid -> working directory, in one lsof call.
+cwd_map() {
+  [ -z "$1" ] && return
+  lsof -a -d cwd -p "$1" -Fpn 2>/dev/null |
+    awk '/^p/ { pid = substr($0, 2) } /^n/ { print pid "\t" substr($0, 2) }'
+}
+
+# One row per claude session; pass a pane id to build that row alone.
+collect() {
+  local rows dirs pids id pid rss act tgt win cwd seen_at rank label ctx
+  rows=$(claude_panes)
+  [ -n "${1:-}" ] && rows=$(awk -v id="$1" -F'\t' '$1 == id' <<<"$rows")
+  [ -z "$rows" ] && return
+  pids=$(cut -f2 <<<"$rows" | paste -sd, -)
+  dirs=$(cwd_map "$pids")
+  while IFS=$'\t' read -r id pid rss act tgt win; do
+    cwd=$(awk -v p="$pid" -F'\t' '$1 == p { print $2; exit }' <<<"$dirs")
+    [ -z "$cwd" ] && cwd="?"
+    seen_at=$(last_message "$cwd")
+    [ "${seen_at:-0}" -eq 0 ] && seen_at=$act
+    IFS=$'\t' read -r rank label ctx < <(pane_state "$id")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$id" "$seen_at" "$rank" "$label" "$tgt" "$win" "$cwd" "$pid" "$rss" "$ctx"
+  done <<<"$rows"
+}
+
+list() {
+  local mode=${1:-recent} sorted
+  if [ "$mode" = status ]; then
+    sorted=$(collect | sort -t"$(printf '\t')" -k3,3n -k2,2nr)
+  else
+    sorted=$(collect | sort -t"$(printf '\t')" -k2,2nr)
+  fi
+  [ -z "$sorted" ] && { echo "no claude sessions in tmux" >&2; return 0; }
+  printf '%s\n' "$sorted" | awk -v home="$HOME" -v self="${TMUX_PANE:-}" -v now="$(date +%s)" '
+    function ago(t,   d) {
+      if (t <= 0) return "-"
+      d = now - t
+      if (d < 60)    return sprintf("%ds", d)
+      if (d < 3600)  return sprintf("%dm", d / 60)
+      if (d < 86400) return sprintf("%.0fh", d / 3600)
+      return sprintf("%dd", d / 86400)
+    }
+    function cut(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
+    BEGIN { FS = "\t"
+            icon["input"] = "◆"; col["input"] = "\033[35m"
+            icon["busy"]  = "●"; col["busy"]  = "\033[33m"
+            icon["draft"] = "✎"; col["draft"] = "\033[34m"
+            icon["idle"]  = "○"; col["idle"]  = "\033[32m" }
+    {
+      proj = $7; sub(/.*\//, "", proj)
+      here = ($1 == self) ? "\033[34m>\033[0m" : " "
+      printf "%s\t%s %s%s %-5s\033[0m \033[90m%4s\033[0m  \033[36m%-13s\033[0m \033[35m%-12s\033[0m %-22s \033[90m%s\033[0m\n",
+        $1, here, col[$4], icon[$4], $4, ago($2), cut($5, 13), cut($6, 12), cut(proj, 22), cut($10, 70)
+    }
+  '
+}
+
+preview() {
+  local id=$1 row cwd pid branch lines short
+  row=$(collect "$id")
+  [ -z "$row" ] && { echo "session is gone"; return; }
+  cwd=$(cut -f7 <<<"$row"); pid=$(cut -f8 <<<"$row")
+  branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  short=$cwd; case "$cwd" in "$HOME"/*) short="~${cwd#"$HOME"}" ;; esac
+  printf '\033[1m%s\033[0m  \033[90m%s\033[0m\n' "$(cut -f5 <<<"$row")" "$short"
+  printf '\033[90mpid %s · %dMB%s · last message %s\033[0m\n\n' \
+    "$pid" "$(( $(cut -f9 <<<"$row") / 1024 ))" "${branch:+ · $branch}" \
+    "$(date -r "$(cut -f2 <<<"$row")" '+%H:%M' 2>/dev/null)"
+  lines=$(( ${FZF_PREVIEW_LINES:-40} - 4 ))
+  [ "$lines" -lt 10 ] && lines=10
+  tmux capture-pane -p -e -t "$id" 2>/dev/null | tail -n "$lines"
+}
+
+teleport() {
+  local id=$1 session
+  session=$(tmux display -p -t "$id" '#{session_name}' 2>/dev/null) || return 1
+  tmux select-pane -t "$id"
+  tmux select-window -t "$id"
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$session"
+  else
+    tmux attach -t "$session"
+  fi
+}
+
+pick() {
+  local mode=$1 out
+  command -v fzf >/dev/null || die "needs fzf (brew install fzf)"
+  out=$(list "$mode" | fzf --ansi --delimiter="$(printf '\t')" --with-nth=2 \
+    --height=100% --border=none --info=inline --pointer='>' \
+    --header='enter jump · alt-a recent · alt-s status · ctrl-r refresh' \
+    --preview="$SELF --preview {1}" --preview-window='right,55%,border-left' \
+    --bind="ctrl-r:reload($SELF --list $mode)" \
+    --bind="alt-a:reload($SELF --list recent)" \
+    --bind="alt-s:reload($SELF --list status)")
+  [ -z "$out" ] && return 0
+  teleport "$(cut -f1 <<<"$out")"
+}
+
+case "${1:-}" in
+  ""|--recent) pick recent ;;
+  --status)    pick status ;;
+  --plain)     list "${2:-recent}" | cut -f2- ;;
+  --list)      list "${2:-recent}" ;;
+  --preview)   preview "${2:?pane id}" ;;
+  -h|--help)   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)           die "unknown arg '$1'" ;;
+esac

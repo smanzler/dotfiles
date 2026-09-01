@@ -4,6 +4,7 @@ base = [
   "neovim",
   "zsh",
   "zoxide",
+  "fzf",
   "tmux",
   "zsh-syntax-highlighting",
   "zsh-autosuggestions"

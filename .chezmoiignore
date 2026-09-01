@@ -1,0 +1,9 @@
+{{/* macOS-only work tooling: these depend on `sysctl vm.swapusage`, BSD lsof/ps/top
+     flags, Docker Desktop's settings-store, and macOS $TMPDIR nvim socket paths.
+     They would be broken no-ops on linux/windows, so don't deploy them there. */}}
+{{- if ne .chezmoi.os "darwin" }}
+.local/bin/p0up
+.local/bin/p0down
+.local/bin/p0finish
+.local/bin/claude-sessions
+{{- end }}

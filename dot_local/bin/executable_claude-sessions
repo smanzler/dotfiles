@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# claude-sessions — inventory Claude Code sessions; reap only orphaned ones.
+#
+# Deliberately conservative. A Claude session holds conversation state that is not
+# recoverable by restarting, so age alone is NEVER grounds for killing one: a
+# day-old session in a pane you still use is perfectly healthy. The only safe
+# automatic target is a session whose owning tmux pane no longer exists — nothing
+# can reach it, and it is holding memory for nobody.
+#
+# Measured context: 6 live sessions totalled ~729MB, versus ~10GB for nvim language
+# servers. Claude sessions are not usually your memory problem — check with `list`
+# before assuming they are.
+#
+#   claude-sessions            # list every session, flag orphans and stale ones
+#   claude-sessions --reap     # kill ONLY orphaned sessions (no live tmux pane)
+#   claude-sessions --reap --dry-run
+#   claude-sessions --stale-hours 12   # what counts as "stale" in the report
+
+set -uo pipefail
+
+REAP=0; DRY=0; STALE_HOURS=24
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reap)        REAP=1 ;;
+    --dry-run|-n)  DRY=1 ;;
+    --stale-hours) STALE_HOURS="${2:?needs a number}"; shift ;;
+    -h|--help)     sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "claude-sessions: unknown arg '$1'" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# Never touch the session this script is running inside: walk our own ancestry and
+# collect every pid, so a claude in our parent chain is off-limits.
+SELF_CHAIN=" "
+cur=$$
+for _ in 1 2 3 4 5 6 7 8; do
+  [ -z "$cur" ] || [ "$cur" = "0" ] || [ "$cur" = "1" ] || SELF_CHAIN="$SELF_CHAIN$cur "
+  cur=$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ') || break
+  [ -z "$cur" ] && break
+done
+
+# pane_pid -> "session:window" for every live pane
+PANES=$(mktemp); trap 'rm -f "$PANES"' EXIT
+tmux list-panes -a -F '#{pane_pid}|#{session_name}:#{window_name}' 2>/dev/null > "$PANES" || true
+
+# Resolve a pid to the live tmux pane that owns it, by walking up its ancestry.
+owner_pane() {
+  local cur="$1" hit
+  for _ in 1 2 3 4 5 6 7 8; do
+    cur=$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')
+    [ -z "$cur" ] || [ "$cur" = "1" ] && break
+    hit=$(grep "^$cur|" "$PANES" 2>/dev/null | head -1)
+    [ -n "$hit" ] && { echo "${hit#*|}"; return 0; }
+  done
+  return 1
+}
+
+# etime (dd-hh:mm:ss / hh:mm:ss / mm:ss) -> hours
+etime_hours() {
+  echo "$1" | awk -F'[-:]' '{
+    if (NF==4)      h=$1*24 + $2 + $3/60
+    else if (NF==3) h=$1 + $2/60
+    else            h=$1/60
+    printf "%.0f", h
+  }'
+}
+
+# Enumerate with ps, NOT pgrep. On this machine `pgrep -x claude` silently omits
+# at least one live session (verified: ps found 7, pgrep 6 — the missing one was the
+# session invoking the script). An inventory tool that cannot see itself is worse
+# than useless, so match on the comm basename via ps.
+# macOS ships bash 3.2, which has no `mapfile`, so populate the array portably.
+PIDS=()
+while IFS= read -r _pid; do
+  [ -n "$_pid" ] && PIDS+=("$_pid")
+done < <(ps -eo pid,comm | awk '{n=$2; sub(/.*\//,"",n); if (n=="claude") print $1}')
+if [ ${#PIDS[@]} -eq 0 ]; then echo "no claude sessions running"; exit 0; fi
+
+declare -a ORPHANS=()
+total_rss=0
+printf '\033[1m  %-8s %-10s %-8s %-26s %s\033[0m\n' PID AGE RSS "TMUX PANE" STATE
+for p in "${PIDS[@]}"; do
+  age=$(ps -o etime= -p "$p" 2>/dev/null | tr -d ' '); [ -z "$age" ] && continue
+  rss=$(ps -o rss= -p "$p" 2>/dev/null | tr -d ' '); rss=${rss:-0}
+  total_rss=$((total_rss + rss))
+  hrs=$(etime_hours "$age")
+  pane=$(owner_pane "$p" || echo "")
+  state=""; color=""
+  case " $SELF_CHAIN " in
+    *" $p "*) state="this session"; color='\033[36m' ;;
+  esac
+  if [ -z "$state" ]; then
+    if [ -z "$pane" ]; then
+      state="ORPHANED — no live pane"; color='\033[31m'; ORPHANS+=("$p")
+    elif [ "$hrs" -ge "$STALE_HOURS" ]; then
+      state="stale (${hrs}h) — yours to judge"; color='\033[33m'
+    else
+      state="active"; color='\033[32m'
+    fi
+  fi
+  printf "  %-8s %-10s %6dMB %-26s ${color}%s\033[0m\n" \
+    "$p" "$age" "$((rss/1024))" "${pane:-<none>}" "$state"
+done
+printf '\n  %d session(s), %dMB resident total\n' "${#PIDS[@]}" "$((total_rss/1024))"
+
+if [ ${#ORPHANS[@]} -eq 0 ]; then
+  echo "  no orphans — nothing is safe to reap automatically"
+  [ "$REAP" = 1 ] && echo "  (--reap had nothing to do; stale sessions are never killed automatically)"
+  exit 0
+fi
+
+printf '\033[31m  %d orphaned session(s): %s\033[0m\n' "${#ORPHANS[@]}" "$(printf '%s ' "${ORPHANS[@]}")"
+if [ "$REAP" != 1 ]; then
+  echo "  reap them with: claude-sessions --reap"
+  exit 0
+fi
+
+for p in "${ORPHANS[@]}"; do
+  if [ "$DRY" = 1 ]; then
+    echo "  [dry-run] kill $p"
+  else
+    kill "$p" 2>/dev/null && echo "  killed $p" || echo "  could not kill $p"
+  fi
+done

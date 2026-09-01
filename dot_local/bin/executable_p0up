@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# p0up — start a p0 app stack from a chosen worktree, safely, from inside tmux.
+#
+# Equivalent to `yarn :tmuxinator` (P0_APP_ROOT=$(pwd) tmuxinator start app
+# -p ./backend/scripts/app.tmuxinator.yml) but adds:
+#   * worktree selection, so you can launch app-3 while sitting in app-5
+#   * a preflight port check, so you never silently bind a stale stack's ports
+#   * --no-attach + switch-client, because attaching from inside tmux nests
+#   * service-disable presets (the P0_DISABLE_* flags the tmuxinator config
+#     already supports but nothing exposes)
+#   * session-scoped exact tmux targeting (-t '=name:'). Bare -t prefix-matches,
+#     and '=' alone still loses to a same-named WINDOW in another session — the
+#     trailing colon is what pins it to a session. Both verified on this machine.
+#
+# Usage:
+#   p0up                      # current worktree, LEAN by default, stays put
+#   p0up app-3                # start ~/repos/app-3
+#   p0up app-3 --full         # everything, incl. grafana + refresh-cache + assessment
+#   p0up app-3 --switch       # start it AND jump to the session
+#   p0up --without jit,tenant # lean, minus those too
+#   p0up --frontend-only      # frontend + api only
+#   p0up app-3 -n mystack     # explicit session name
+#   p0up --list               # worktrees, branches, what is up, port state
+#   p0up --dry-run
+#
+# Lean (the default) skips grafana, refresh-cache and assessment — the last two are
+# ~73% of backend RSS on their own.
+
+set -uo pipefail
+
+REPOS="$HOME/repos"
+CONFIG_REL="backend/scripts/app.tmuxinator.yml"
+PORTS=(6379 16379 8080 8088 8079 8081 9001 9002 9003 9004 9005 9006 4317 4318 4000)
+
+TARGET=""; NAME=""; DRY=0; LIST=0; FULL=0; SWITCH=0
+
+# Lean is the DEFAULT: grafana plus the two services that dominate memory
+# (refresh-cache ~466MB, assessment ~371MB — together ~73% of backend RSS).
+# --full opts back into everything.
+LEAN_SET=(GRAFANA REFRESH_CACHE ASSESSMENT)
+declare -a EXTRA=()
+
+die() { printf '\033[31mp0up: %s\033[0m\n' "$*" >&2; exit 1; }
+step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --full)          FULL=1 ;;
+    --lean)          : ;;   # now the default; accepted for muscle memory
+    --no-grafana)    EXTRA+=(GRAFANA) ;;
+    --frontend-only) EXTRA+=(TENANT JIT INSTALL_VALIDATION SECRET_MANAGEMENT \
+                             BRAEKHUS DEV_PROXY) ;;
+    --without)       shift; IFS=, read -ra x <<<"${1:?--without needs a list}"
+                     for w in "${x[@]}"; do EXTRA+=("$(echo "$w" | tr '[:lower:]-' '[:upper:]_')"); done ;;
+    --switch|--attach) SWITCH=1 ;;
+    -n|--name)       NAME="${2:?-n needs a name}"; shift ;;
+    --list|-l)       LIST=1 ;;
+    --dry-run)       DRY=1 ;;
+    -h|--help)       sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)              die "unknown flag '$1' (try --help)" ;;
+    *)               [ -n "$TARGET" ] && die "more than one worktree given"; TARGET="$1" ;;
+  esac
+  shift
+done
+
+# ------------------------------------------------------------------- --list
+if [ "$LIST" = 1 ]; then
+  printf '\033[1m%-28s %-34s %s\033[0m\n' "NAME" "BRANCH" "STACK"
+  # Enumerated through p0name rather than a "$REPOS"/* glob, which only ever saw
+  # worktrees sitting flat in ~/repos and silently omitted the nested ones.
+  while read -r name d; do
+    # only worktrees that can actually host a stack
+    [ -f "$d/$CONFIG_REL" ] || continue
+    br=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
+    up="-"
+    if tmux has-session -t "=$name:" 2>/dev/null \
+       || tmux has-session -t "=$(basename "$d"):" 2>/dev/null; then up="session up"; fi
+    printf '%-28s %-34.34s %s\n' "$name" "$br" "$up"
+  done < <(p0name --list 2>/dev/null)
+  echo
+  busy=""; for p in "${PORTS[@]}"; do lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && busy="$busy $p"; done
+  [ -n "$busy" ] && printf '\033[33mports bound:%s\033[0m  (run p0down first)\n' "$busy" \
+                 || echo "all stack ports free"
+  printf 'tmux sessions: %s\n' "$(tmux ls -F '#{session_name}' 2>/dev/null | paste -sd' ' - || echo none)"
+  exit 0
+fi
+
+# -------------------------------------------------------------- resolve root
+if [ -z "$TARGET" ]; then
+  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || die "not in a git worktree — pass one explicitly, e.g. 'p0up app-3'"
+else
+  case "$TARGET" in
+    /*) ROOT="$TARGET" ;;
+    # A bare name is a directory under ~/repos for a flat worktree ("app-3"),
+    # but nested ones live at ~/repos/<owner>/<branch>, so fall back to looking
+    # the name up in the real worktree list before giving up.
+    *)  ROOT="$REPOS/$TARGET"
+        [ -d "$ROOT" ] || ROOT=$(p0name --find "$TARGET" 2>/dev/null) || ROOT="$REPOS/$TARGET" ;;
+  esac
+fi
+# Resolve the disable set: lean base unless --full, plus any explicit additions.
+declare -a DISABLE=()
+[ "$FULL" = 1 ] || DISABLE+=("${LEAN_SET[@]}")
+[ ${#EXTRA[@]} -gt 0 ] && DISABLE+=("${EXTRA[@]}")
+# dedupe
+if [ ${#DISABLE[@]} -gt 0 ]; then
+  IFS=$'\n' read -r -d '' -a DISABLE < <(printf '%s\n' "${DISABLE[@]}" | sort -u && printf '\0')
+fi
+
+[ -d "$ROOT" ] || die "no such directory: $ROOT"
+ROOT=$(cd "$ROOT" && pwd -P)
+[ -f "$ROOT/$CONFIG_REL" ] || die "no $CONFIG_REL under $ROOT — is this a p0 app worktree?"
+# Session name comes from p0name, so the stack session, the worktree window and
+# the ticket all agree. Falls back to the directory basename, which is what
+# p0name itself does for a branch with no ticket.
+if [ -z "$NAME" ]; then
+  NAME=$(p0name "$ROOT" 2>/dev/null)
+  [ -n "$NAME" ] || NAME=$(basename "$ROOT")
+fi
+
+step "Target"
+echo "  worktree: $ROOT"
+echo "  branch:   $(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+echo "  session:  $NAME"
+
+# ------------------------------------------------------------------ preflight
+step "Preflight"
+# In --dry-run these are reported but not fatal: the point of a dry run is to show
+# the plan, and it cannot collide with anything because it starts nothing.
+if tmux has-session -t "=$NAME:" 2>/dev/null; then
+  if [ "$DRY" = 1 ]; then
+    printf '\033[33m  would collide: session %s already exists\033[0m\n' "$NAME"
+  else
+    die "session '$NAME' already exists. Attach with: tmux switch-client -t '=$NAME:'
+       (or tear it down: p0down --session '$NAME')"
+  fi
+fi
+BUSY=""
+for p in "${PORTS[@]}"; do
+  lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && BUSY="$BUSY $p"
+done
+if [ -n "$BUSY" ]; then
+  if [ "$DRY" = 1 ]; then
+    printf '\033[33m  would collide: ports already bound:%s\033[0m\n' "$BUSY"
+  else
+    printf '\033[31m  ports already bound:%s\033[0m\n' "$BUSY"
+    die "another stack is running — these ports and the shared valkey-data volume
+       would collide. Run 'p0down' first, then retry."
+  fi
+else
+  echo "  no session collision, all ports free"
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  printf '\033[33m  warning: Docker is not responding — valkey/grafana panes will fail\033[0m\n'
+else
+  echo "  docker responsive"
+fi
+
+# ------------------------------------------------------------------- env
+# The tmuxinator config gates each pane on ENV["P0_DISABLE_X"] != "1", and that ERB
+# renders in THIS process, so exporting here controls which panes get created.
+# Caveat: .yarnrc.yml injectEnvironmentFiles pulls .env.yarn/.env.yarn.local into
+# every `yarn` call inside the panes, so P0_DEBUG=1 there still attaches --inspect.
+# To drop the 6 inspectors, set P0_DEBUG=0 in .env.yarn.local.
+step "Configuration"
+export P0_APP_ROOT="$ROOT"
+if [ ${#DISABLE[@]} -gt 0 ]; then
+  for d in "${DISABLE[@]}"; do export "P0_DISABLE_${d}=1"; done
+  printf '  disabled: %s\n' "$(printf '%s ' "${DISABLE[@]}")"
+  [ "$FULL" = 1 ] || echo "  (lean is the default — use --full for everything)"
+else
+  echo "  disabled: (none — full stack)"
+fi
+grep -q '^P0_DEBUG=1' "$ROOT/.env.yarn.local" 2>/dev/null \
+  && printf '\033[33m  note: P0_DEBUG=1 in .env.yarn.local — services start with --inspect\033[0m\n'
+
+# ------------------------------------------------------------------- launch
+# tmuxinator's template.erb runs `hook_on_project_exit` as the LAST line of the
+# generated script, OUTSIDE the `if attach?` guard (template.erb:114-115). This
+# config's hook is:
+#     [ "$TERM_PROGRAM" = "iTerm.app" ] && tmux -CC attach || tmux attach
+# so it always fires: inside tmux it fails with "sessions should be nested with
+# care" and becomes the script's exit status (1); outside tmux it *attaches* and
+# blocks forever. Either way the session itself is already fully built by then.
+# Fix: run against a temp copy with on_project_exit stripped out. The repo file is
+# untouched (it's tracked, and there are five worktrees of it), and `root:` comes
+# from $P0_APP_ROOT so the temp file's location is irrelevant.
+step "Starting stack"
+
+TMPCFG=$(mktemp -t p0up-cfg) || die "mktemp failed"
+trap 'rm -f "$TMPCFG"' EXIT INT TERM
+python3 - "$ROOT/$CONFIG_REL" "$TMPCFG" <<'PYEOF' || die "could not prepare config"
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+out, skip = [], False
+for line in open(src).read().splitlines(keepends=True):
+    if re.match(r'^on_project_exit\s*:', line):
+        skip = True
+        out.append("# on_project_exit stripped by p0up (blocking `tmux attach`)\n")
+        continue
+    if skip:
+        # consume the block: blank lines and anything indented
+        if line.strip() == "" or line[:1] in (" ", "\t"):
+            continue
+        skip = False
+    out.append(line)
+open(dst, "w").write("".join(out))
+PYEOF
+
+if grep -q 'on_project_exit' "$TMPCFG" && ! grep -q 'stripped by p0up' "$TMPCFG"; then
+  die "on_project_exit still present in prepared config — refusing to run"
+fi
+
+# --suppress-tmux-version-warning: tmuxinator 3.4.0 only knows tmux up to 3.6b, and
+# this machine runs 3.7. Without it, tmuxinator prints a warning and blocks on
+# "Press ENTER to continue" — which stalls the launch on an unattended run.
+CMD=(tmuxinator start app -n "$NAME" -p "$TMPCFG" --no-attach
+     --suppress-tmux-version-warning=1)
+if [ "$DRY" = 1 ]; then
+  printf '  [dry-run] P0_APP_ROOT=%s %s\n' "$ROOT" "tmuxinator start app -n $NAME -p <stripped copy of $CONFIG_REL> --no-attach"
+  printf '  [dry-run] on_project_exit removed: %s\n' "$(grep -c 'stripped by p0up' "$TMPCFG") line(s)"
+  printf '\n\033[33mDry run — nothing started.\033[0m\n'; exit 0
+fi
+
+( cd "$ROOT" && "${CMD[@]}" )
+rc=$?
+# Do not trust rc alone — verify the session. (Kept lenient in case another hook
+# in the config misbehaves the same way; the session is the real success signal.)
+if [ $rc -ne 0 ]; then
+  printf '\033[33m  tmuxinator exited %s — verifying session anyway\033[0m\n' "$rc"
+fi
+
+tmux has-session -t "=$NAME:" 2>/dev/null || die "session '$NAME' was not created"
+printf '  session created: %s (%s windows)\n' "$NAME" \
+  "$(tmux list-windows -t "=$NAME:" 2>/dev/null | wc -l | tr -d ' ')"
+
+# -------------------------------------------------------------------- attach
+# Default is to stay put: the stack runs detached and you keep your current pane.
+# --switch opts into jumping there.
+step "Ready"
+if [ "$SWITCH" = 1 ]; then
+  if [ -n "${TMUX:-}" ]; then
+    echo "  switching client to '$NAME'"
+    tmux switch-client -t "=$NAME:"
+  else
+    echo "  attaching to '$NAME'"
+    tmux attach -t "=$NAME:"
+  fi
+else
+  echo "  stack running detached in session '$NAME' — you have not been moved"
+  if [ -n "${TMUX:-}" ]; then
+    echo "  jump there with:  tmux switch-client -t '=$NAME:'"
+  else
+    echo "  attach with:      tmux attach -t '=$NAME:'"
+  fi
+  echo "  tear down with:   p0down"
+fi

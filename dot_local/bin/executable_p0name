@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# p0name — map a worktree to its short tmux name, and back.
+#
+# One mapping, one place. Consumers: the NeogitWorktreeCreate autocmd (which
+# opens a window per worktree) and, potentially, p0up/p0down/p0finish for the
+# dev-stack session name.
+#
+# The name is the branch's ticket, because that is the only short, stable,
+# meaningful part of a branch like
+#   simonmanzler/eng-8346-agentic-activity-ui-control-sidecar-from-url-params
+# Worktree basenames are either uninformative ("app-5") or the whole 60-char
+# slug, and the status bar shows #W.
+#
+# Falls back to the worktree basename when there is no ticket (main, detached
+# HEAD), so the main checkout stays "app".
+#
+# Usage:
+#   p0name [PATH]        # name for PATH (default: cwd's worktree)
+#   p0name --find NAME   # inverse: worktree path whose name is NAME
+#   p0name --list        # every worktree and its name
+
+set -uo pipefail
+
+REPOS="${P0_REPOS:-$HOME/repos}"
+
+# Derive the name from a worktree path.
+name_of() {
+  local root="$1" branch ticket
+  branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+
+  # Strip any owner/ prefix, then take a leading TICKET-123 (eng-, cus-, ...).
+  ticket=$(printf '%s\n' "${branch##*/}" \
+    | grep -oiE '^[a-z]+-[0-9]+' \
+    | tr '[:upper:]' '[:lower:]')
+
+  if [ -n "$ticket" ]; then
+    printf '%s\n' "$ticket"
+  else
+    basename "$root"
+  fi
+}
+
+# All worktrees of the repo. They all belong to one repo, so any worktree lists
+# them all; $REPOS/app is the main one. Nested worktrees (repos/owner/branch)
+# are included, which a shell glob over $REPOS/* would miss.
+list_worktrees() {
+  local entry="$REPOS/app"
+  [ -d "$entry" ] || entry=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  git -C "$entry" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}'
+}
+
+case "${1:-}" in
+  --find)
+    want="${2:?--find needs a name}"
+    while read -r wt; do
+      # Match the derived name OR the directory basename. Sessions predating
+      # ticket naming are called after the directory (p0up used basename), and a
+      # nested worktree's basename is the whole branch slug, so both spellings
+      # have to resolve to the same worktree or teardown silently finds nothing.
+      if [ "$(name_of "$wt")" = "$want" ] || [ "$(basename "$wt")" = "$want" ]; then
+        printf '%s\n' "$wt"
+        exit 0
+      fi
+    done < <(list_worktrees)
+    exit 1
+    ;;
+  --list)
+    while read -r wt; do
+      printf '%-12s %s\n' "$(name_of "$wt")" "$wt"
+    done < <(list_worktrees)
+    ;;
+  -h|--help)
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    root="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+    [ -n "$root" ] || { echo "p0name: not in a git worktree" >&2; exit 1; }
+    name_of "$root"
+    ;;
+esac
