@@ -22,5 +22,14 @@
       }
     ]
   },
-  "agentPushNotifEnabled": true
+  "agentPushNotifEnabled": true,
+  "editorMode": "vim",
+  "vimInsertModeRemaps": {
+    "jk": "<Esc>"
+  },
+  "modelSettings": {
+    "claude-opus-5": {
+      "effortLevel": "high"
+    }
+  }
 }

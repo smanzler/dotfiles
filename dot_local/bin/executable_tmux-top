@@ -142,6 +142,7 @@ pick() {
   reload="$SELF --list"
   out=$(list "$key" | fzf --ansi --delimiter="$(printf '\t')" --with-nth=2 \
     --height=100% --border=none --info=inline --pointer='>' \
+    --color=bg:-1,gutter:-1,preview-bg:-1,border:-1 \
     --header='enter jump · ctrl-x kill top proc · ctrl-k kill pane · alt-m mem · alt-c cpu' \
     --preview="$SELF --preview {1}" --preview-window='right,50%,border-left' \
     --bind="ctrl-r:reload($reload $key)" \

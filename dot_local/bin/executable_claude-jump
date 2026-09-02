@@ -5,9 +5,9 @@
 #   claude-jump --status # sort by status instead of recency
 #   claude-jump --plain  # print the table, no picker
 #
-# Recency is the last write to a transcript in the session working directory, so it
-# tracks the last thing you or Claude said. Two sessions in one directory share that
-# time, and a session with no transcript falls back to tmux window activity.
+# Age is when the last run finished, read off the pane ("done 5:24 PM"), so a busy
+# session shows the end of its previous run. With no run on screen it falls back to
+# the newest transcript write for the working directory, then to window activity.
 #
 # Status is read off the pane screen: input = Claude is waiting for an answer,
 # busy = it is working, draft = unsent text in the prompt, idle = your turn.
@@ -65,7 +65,8 @@ claude_panes() {
   rm -f "$panes"
 }
 
-# What the pane screen says the session is doing: rank, label, one line of context.
+# What the pane screen says: rank, label, one line of context, and the clock time
+# Claude printed when its last run finished.
 pane_state() {
   tmux capture-pane -p -t "$1" 2>/dev/null | awk '
     /esc to interrupt/                                     { busy = 1 }
@@ -75,6 +76,7 @@ pane_state() {
     /^[[:space:]]*⏺[[:space:]]/                            { did = $0 }
     /^[[:space:]]*[✻✳][[:space:]]/                          { summary = $0 }
     /^[[:space:]]*❯[[:space:]]+[^[:space:]]/               { draft = $0 }
+    match($0, /done [0-9]+:[0-9]+ ?[AP]M/)                 { done = substr($0, RSTART + 5, RLENGTH - 5) }
     function clean(s) {
       sub(/^[[:space:]]*[⏺✻✳·❯*✽✢][[:space:]]*/, "", s)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
@@ -82,10 +84,10 @@ pane_state() {
       return s
     }
     END {
-      if (ask)        printf "0\tinput\t%s\n", clean(q ? q : "waiting for an answer")
-      else if (busy)  printf "1\tbusy\t%s\n", clean(spin ? spin : "working")
-      else if (draft) printf "2\tdraft\t%s\n", clean(draft)
-      else            printf "3\tidle\t%s\n", clean(did ? did : summary)
+      if (ask)        printf "0\tinput\t%s\t%s\n", clean(q ? q : "waiting for an answer"), done
+      else if (busy)  printf "1\tbusy\t%s\t%s\n", clean(spin ? spin : "working"), done
+      else if (draft) printf "2\tdraft\t%s\t%s\n", clean(draft), done
+      else            printf "3\tidle\t%s\t%s\n", clean(did ? did : summary), done
     }
   '
 }
@@ -107,7 +109,8 @@ cwd_map() {
 
 # One row per claude session; pass a pane id to build that row alone.
 collect() {
-  local rows dirs pids id pid rss act tgt win cwd seen_at rank label ctx
+  local rows dirs pids id pid rss act tgt win cwd seen_at rank label ctx done now today
+  now=$(date +%s); today=$(date +%F)
   rows=$(claude_panes)
   [ -n "${1:-}" ] && rows=$(awk -v id="$1" -F'\t' '$1 == id' <<<"$rows")
   [ -z "$rows" ] && return
@@ -116,9 +119,15 @@ collect() {
   while IFS=$'\t' read -r id pid rss act tgt win; do
     cwd=$(awk -v p="$pid" -F'\t' '$1 == p { print $2; exit }' <<<"$dirs")
     [ -z "$cwd" ] && cwd="?"
-    seen_at=$(last_message "$cwd")
+    IFS=$'\t' read -r rank label ctx done < <(pane_state "$id")
+    seen_at=0
+    if [ -n "$done" ]; then
+      seen_at=$(date -j -f '%I:%M %p %Y-%m-%d' "$done $today" +%s 2>/dev/null || echo 0)
+      # A finish time later than now belongs to yesterday.
+      [ "$seen_at" -gt "$((now + 300))" ] && seen_at=$((seen_at - 86400))
+    fi
+    [ "$seen_at" -eq 0 ] && seen_at=$(last_message "$cwd")
     [ "${seen_at:-0}" -eq 0 ] && seen_at=$act
-    IFS=$'\t' read -r rank label ctx < <(pane_state "$id")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$id" "$seen_at" "$rank" "$label" "$tgt" "$win" "$cwd" "$pid" "$rss" "$ctx"
   done <<<"$rows"
@@ -164,7 +173,7 @@ preview() {
   branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)
   short=$cwd; case "$cwd" in "$HOME"/*) short="~${cwd#"$HOME"}" ;; esac
   printf '\033[1m%s\033[0m  \033[90m%s\033[0m\n' "$(cut -f5 <<<"$row")" "$short"
-  printf '\033[90mpid %s · %dMB%s · last message %s\033[0m\n\n' \
+  printf '\033[90mpid %s · %dMB%s · last run finished %s\033[0m\n\n' \
     "$pid" "$(( $(cut -f9 <<<"$row") / 1024 ))" "${branch:+ · $branch}" \
     "$(date -r "$(cut -f2 <<<"$row")" '+%H:%M' 2>/dev/null)"
   lines=$(( ${FZF_PREVIEW_LINES:-40} - 4 ))
@@ -189,6 +198,7 @@ pick() {
   command -v fzf >/dev/null || die "needs fzf (brew install fzf)"
   out=$(list "$mode" | fzf --ansi --delimiter="$(printf '\t')" --with-nth=2 \
     --height=100% --border=none --info=inline --pointer='>' \
+    --color=bg:-1,gutter:-1,preview-bg:-1,border:-1 \
     --header='enter jump · alt-a recent · alt-s status · ctrl-r refresh' \
     --preview="$SELF --preview {1}" --preview-window='right,55%,border-left' \
     --bind="ctrl-r:reload($SELF --list $mode)" \
