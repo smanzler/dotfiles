@@ -15,7 +15,7 @@
 # Usage:
 #   p0up                      # current worktree, LEAN by default, stays put
 #   p0up app-3                # start ~/repos/app-3
-#   p0up app-3 --full         # everything, incl. grafana + refresh-cache + assessment
+#   p0up app-3 --full         # everything, incl. grafana + assessment
 #   p0up app-3 --switch       # start it AND jump to the session
 #   p0up --without jit,tenant # lean, minus those too
 #   p0up --frontend-only      # frontend + api only
@@ -23,8 +23,9 @@
 #   p0up --list               # worktrees, branches, what is up, port state
 #   p0up --dry-run
 #
-# Lean (the default) skips grafana, refresh-cache and assessment — the last two are
-# ~73% of backend RSS on their own.
+# Lean (the default) skips grafana and assessment; assessment alone is ~371MB of
+# backend RSS. refresh-cache IS started by default — use `--without refresh-cache`
+# to skip it.
 
 set -uo pipefail
 
@@ -34,10 +35,12 @@ PORTS=(6379 16379 8080 8088 8079 8081 9001 9002 9003 9004 9005 9006 4317 4318 40
 
 TARGET=""; NAME=""; DRY=0; LIST=0; FULL=0; SWITCH=0
 
-# Lean is the DEFAULT: grafana plus the two services that dominate memory
-# (refresh-cache ~466MB, assessment ~371MB — together ~73% of backend RSS).
+# Lean is the DEFAULT: grafana plus assessment (~371MB, the largest single
+# backend service). refresh-cache used to be here too and is deliberately not
+# any more — it is wanted often enough that paying its ~466MB by default beats
+# rediscovering a cold cache. Drop it with `--without refresh-cache`.
 # --full opts back into everything.
-LEAN_SET=(GRAFANA REFRESH_CACHE ASSESSMENT)
+LEAN_SET=(GRAFANA ASSESSMENT)
 declare -a EXTRA=()
 
 die() { printf '\033[31mp0up: %s\033[0m\n' "$*" >&2; exit 1; }

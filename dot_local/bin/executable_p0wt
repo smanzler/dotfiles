@@ -12,7 +12,10 @@
 #   p0wt new BRANCH --switch    # ...and jump to the window
 #   p0wt new BRANCH --base main # branch off something other than the current dir
 #   p0wt go NAME                # focus (or open) a worktree's tmux window
+#   p0wt restore                # a window for every worktree, newest first
+#   p0wt prune                  # remove worktrees whose branch is done
 #   p0wt rm NAME                # p0finish --window, then delete the worktree
+#   p0wt rm NAME --force        # ...even with uncommitted changes
 #   p0wt doctor                 # prune stale registrations, report unbootstrapped
 #   p0wt <cmd> --dry-run        # print the plan, change nothing
 #
@@ -31,7 +34,7 @@ info() { printf '  %s\n' "$*"; }
 warn() { printf '\033[33m  %s\033[0m\n' "$*"; }
 die()  { printf '\033[31mp0wt: %s\033[0m\n' "$*" >&2; exit 1; }
 run()  { if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi; }
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ---------------------------------------------------------------- repo context
 # Every worktree of a repo can list all the others, so any one of them works as
@@ -70,6 +73,66 @@ short_name() {
   basename "$1"
 }
 
+# The branch "done" test needs something to be done relative to. origin/HEAD is
+# authoritative; fall back to main/master so this still works on a repo where
+# nobody ever set it.
+default_branch() {
+  local entry="$1" b c
+  if b=$(git -C "$entry" symbolic-ref --quiet --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null); then
+    printf '%s\n' "${b#"$REMOTE"/}"
+    return 0
+  fi
+  for c in main master; do
+    if git -C "$entry" show-ref --verify --quiet "refs/remotes/$REMOTE/$c"; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  printf 'main\n'
+}
+
+# Widest short name across the repo's worktrees, so table columns line up
+# whether every branch has a ticket or none of them do.
+name_width() {
+  local w=8 n
+  while read -r d; do
+    n=$(short_name "$d")
+    [ ${#n} -gt "$w" ] && w=${#n}
+  done < <(worktree_dirs "$1")
+  printf '%s\n' "$w"
+}
+
+dir_mtime() {
+  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
+}
+
+# Plain `git worktree remove` dies with "working trees containing submodules
+# cannot be moved or removed" on every app worktree that p0init has touched, so
+# always use --force: it gets past that and takes the directory with it (git
+# 2.55). Fall back to deleting the directory ourselves for an older git or any
+# other objection — nothing in there is worth keeping, p0init regenerates
+# node_modules and .env.yarn.local in a couple of minutes.
+#
+# --force also discards uncommitted changes without asking, which is the check
+# plain `remove` used to provide, so callers gate on `clean` themselves.
+remove_worktree() {
+  local entry="$1" dir="$2"
+
+  if [ "$DRY" = 1 ]; then
+    info "[dry-run] git -C $entry worktree remove --force $dir"
+    info "[dry-run]   (falls back to rm -rf + git worktree prune if git refuses)"
+    return 0
+  fi
+
+  git -C "$entry" worktree remove --force "$dir" 2>/dev/null && return 0
+
+  warn "git would not remove it — deleting the directory instead"
+  rm -rf "$dir" || return 1
+  # prune only drops the registration once the directory is actually gone.
+  git -C "$entry" worktree prune
+  [ ! -e "$dir" ]
+}
+
 # ----------------------------------------------------------------------- tmux
 # Window targets are "=session:name" and session targets "=name:". Both the '='
 # and the trailing ':' matter: bare -t prefix-matches, and '=' alone still loses
@@ -80,8 +143,11 @@ current_session() {
   tmux display-message -p -t "${TMUX_PANE:-}" '#S' 2>/dev/null
 }
 
+# Deliberately not `select-window`: that focuses as a side effect, which would
+# make `restore` jump through every window it checks and would move focus on a
+# detached `new`.
 window_exists() {
-  tmux select-window -t "=$1:$2" >/dev/null 2>&1
+  tmux list-windows -t "=$1:" -F '#{window_name}' 2>/dev/null | grep -Fxq "$2"
 }
 
 # Focus the window for a worktree, creating it if absent. Idempotent, so calling
@@ -102,7 +168,12 @@ open_window() {
 
   if window_exists "$session" "$name"; then
     WINDOW_STATE=existing
-    info "window '$name' already exists — focused it"
+    if [ "$detach" = 1 ]; then
+      info "window '$name' already exists"
+    else
+      run "tmux select-window -t '=$session:$name'"
+      info "window '$name' already exists — focused it"
+    fi
     return 0
   fi
 
@@ -230,7 +301,9 @@ cmd_list() {
   local session=""
   in_tmux && session=$(current_session)
 
-  printf '\033[1m%-14s %-6s %-5s %s\033[0m\n' NAME WINDOW INIT BRANCH
+  local w
+  w=$(name_width "$entry")
+  printf "\033[1m%-${w}s %-6s %-5s %s\033[0m\n" NAME WINDOW INIT BRANCH
   while read -r dir; do
     local name win init branch
     name=$(short_name "$dir")
@@ -244,7 +317,7 @@ cmd_list() {
     init="no"
     [ -d "$dir/node_modules" ] && init="yes"
 
-    printf '%-14s %-6s %-5s %s\n' "$name" "$win" "$init" "${branch:-?}"
+    printf "%-${w}s %-6s %-5s %s\n" "$name" "$win" "$init" "${branch:-?}"
   done < <(worktree_dirs "$entry")
 }
 
@@ -292,6 +365,13 @@ cmd_rm() {
     "$dir"/*) die "you are inside $dir — cd out first" ;;
   esac
 
+  # --force no longer only relaxes git's own refusal: remove_worktree always
+  # passes --force, so this is the only thing standing between a typo and
+  # uncommitted work.
+  if [ "$force" != 1 ] && [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
+    die "$dir has uncommitted changes — commit them, or re-run with --force"
+  fi
+
   step "Target"
   info "worktree: $dir"
   info "branch:   $(branch_of "$dir")"
@@ -308,10 +388,7 @@ cmd_rm() {
   fi
 
   step "Removing worktree"
-  local rm_args="'$dir'"
-  [ "$force" = 1 ] && rm_args="--force $rm_args"
-  run "git -C '$entry' worktree remove $rm_args" \
-    || die "git worktree remove failed (uncommitted changes? re-run with --force)"
+  remove_worktree "$entry" "$dir" || die "could not remove $dir"
 
   step "Done"
   if [ "$DRY" = 1 ]; then
@@ -363,12 +440,224 @@ cmd_doctor() {
   [ "$problems" = 0 ] && info "every worktree is bootstrapped"
 }
 
+# ------------------------------------------------------------------ restore
+# Rebuild the window layout after a reboot. No p0init: these worktrees are
+# already bootstrapped, and re-running it on all of them would be minutes of
+# yarn for nothing.
+cmd_restore() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run|-n) DRY=1 ;;
+      *) die "unknown arg '$1'" ;;
+    esac
+    shift
+  done
+
+  in_tmux || die "not inside tmux — start a session first"
+  local entry session
+  entry=$(git_entry) || die "not in a git worktree and no $REPOS/app to fall back on"
+  session=$(current_session) || die "cannot resolve the tmux session"
+
+  # Oldest -> newest, so that the reorder pass below has a stable list to walk
+  # backwards. bash 3.2 has no readarray.
+  local dirs=() dir
+  while read -r dir; do
+    dirs+=("$dir")
+  done < <(
+    while read -r d; do
+      printf '%s\t%s\n' "$(dir_mtime "$d")" "$d"
+    done < <(worktree_dirs "$entry") | sort -n | cut -f2-
+  )
+
+  step "Opening windows in $session (newest first)"
+  local created=0 existing=0 name
+  for dir in "${dirs[@]}"; do
+    name=$(short_name "$dir")
+    if open_window "$dir" "$name" 1; then
+      case "$WINDOW_STATE" in
+        created)  created=$((created + 1)) ;;
+        existing) existing=$((existing + 1)) ;;
+      esac
+    fi
+  done
+
+  # Creating with `new-window -a` puts each window right after the current one,
+  # which happens to come out newest-first for a full restore — but a partial
+  # one leaves the windows it just refilled bunched at the front. So place them
+  # explicitly: walk newest -> oldest, chaining each after the previous, anchored
+  # on the window we are sitting in. Window ids (@N) survive the renumbering
+  # that every move triggers; indices do not.
+  step "Ordering"
+  local anchor prev i
+  anchor=$(tmux display-message -p '#{window_id}' 2>/dev/null) \
+    || { warn "cannot resolve the current window — order left as-is"; anchor=""; }
+  if [ -n "$anchor" ]; then
+    prev="$anchor"
+    for (( i=${#dirs[@]} - 1; i >= 0; i-- )); do
+      name=$(short_name "${dirs[$i]}")
+      window_exists "$session" "$name" || continue
+      run "tmux move-window -d -a -s '=$session:$name' -t '$prev'"
+      prev="=$session:$name"
+    done
+    info "newest first, oldest last"
+  fi
+
+  step "Done"
+  if [ "$DRY" = 1 ]; then
+    warn "Dry run — nothing changed."
+  else
+    info "$created opened, $existing already there"
+  fi
+}
+
+# -------------------------------------------------------------------- prune
+# What "done with a branch" can actually be detected as. Closing the tmux window
+# is not usable as the signal — a reboot closes every window — so this asks git
+# instead, and the verdict column always says which test fired.
+#
+# Removing a worktree does NOT delete its branch, so no commit is ever lost here;
+# the cost is a yarn install and the gitignored files p0init regenerates. That is
+# why `clean` is the only hard safety gate.
+#
+# A branch with no upstream configured is genuinely ambiguous: a missing
+# origin ref means either "merged and deleted" or "never pushed", and git keeps
+# no record of the difference. Those are listed but kept unless --include-local.
+prune_verdict() {
+  local dir="$1" entry="$2" base="$3" branch remote
+
+  [ "$dir" = "$(main_worktree "$entry")" ] && { echo "keep main"; return; }
+  case "$PWD/" in "$dir"/*) echo "keep current"; return ;; esac
+  [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ] && { echo "keep dirty"; return; }
+
+  branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) \
+    || { echo "keep detached"; return; }
+
+  if git -C "$entry" merge-base --is-ancestor "$branch" "$REMOTE/$base" 2>/dev/null; then
+    echo "prune merged"
+    return
+  fi
+
+  remote=$(git -C "$dir" config --get "branch.$branch.remote" 2>/dev/null || true)
+  if [ -n "$remote" ]; then
+    if git -C "$dir" rev-parse --verify --quiet "refs/remotes/$remote/$branch" >/dev/null; then
+      echo "keep active"
+    else
+      echo "prune gone"
+    fi
+  else
+    echo "local no-upstream"
+  fi
+}
+
+cmd_prune() {
+  local yes=0 include_local=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y)        yes=1 ;;
+      --include-local) include_local=1 ;;
+      --dry-run|-n)    DRY=1 ;;
+      -*) die "unknown flag '$1'" ;;
+      *)  die "prune takes no arguments (did you mean: p0wt rm $1?)" ;;
+    esac
+    shift
+  done
+
+  local entry base
+  entry=$(git_entry) || die "not in a git worktree and no $REPOS/app to fall back on"
+  base=$(default_branch "$entry")
+
+  step "Stale registrations"
+  local stale
+  stale=$(git -C "$entry" worktree prune --dry-run --verbose 2>/dev/null)
+  if [ -n "$stale" ]; then
+    printf '%s\n' "$stale" | sed 's/^/  /'
+    run "git -C '$entry' worktree prune"
+  else
+    info "none"
+  fi
+
+  step "Fetching $REMOTE (so 'gone' means gone)"
+  run "git -C '$entry' fetch --prune '$REMOTE'"
+
+  step "Verdicts (base: $REMOTE/$base)"
+  local candidates=() verdict action reason w
+  w=$(name_width "$entry")
+  printf "  \033[1m%-${w}s %-11s %s\033[0m\n" NAME VERDICT BRANCH
+  while read -r dir; do
+    verdict=$(prune_verdict "$dir" "$entry" "$base")
+    action=${verdict%% *}
+    reason=${verdict#* }
+
+    if [ "$action" = local ] && [ "$include_local" = 1 ]; then
+      action=prune; reason="no-upstream"
+    fi
+
+    local color="0"
+    [ "$action" = prune ] && color="33"
+    [ "$action" = local ] && color="36"
+    printf "  \033[%sm%-${w}s %-11s %s\033[0m\n" "$color" \
+      "$(short_name "$dir")" "$reason" "$(branch_of "$dir")"
+
+    [ "$action" = prune ] && candidates+=("$dir")
+  done < <(worktree_dirs "$entry")
+
+  if [ ${#candidates[@]} -eq 0 ]; then
+    step "Nothing to prune"
+    [ "$include_local" = 1 ] || info "pass --include-local to also consider no-upstream branches"
+    return 0
+  fi
+
+  step "Prunable: ${#candidates[@]}"
+  info "branches are kept, so nothing but gitignored files and a yarn install is lost"
+
+  if [ "$DRY" = 1 ]; then
+    for dir in "${candidates[@]}"; do
+      info "[dry-run] would remove $(short_name "$dir")  ($dir)"
+    done
+    warn "Dry run — nothing changed."
+    return 0
+  fi
+
+  if [ "$yes" != 1 ]; then
+    printf '\n  Remove these %s worktrees? [y/N] ' "${#candidates[@]}"
+    local ans=""
+    read -r ans </dev/tty || ans=""
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) warn "Aborted — nothing changed."; return 0 ;;
+    esac
+  fi
+
+  local failed=0
+  for dir in "${candidates[@]}"; do
+    step "Removing $(short_name "$dir")  ($dir)"
+    if command -v p0finish >/dev/null 2>&1; then
+      if ! p0finish --window "$dir"; then
+        warn "p0finish refused — skipped $dir"
+        failed=$((failed + 1))
+        continue
+      fi
+    fi
+    if ! remove_worktree "$entry" "$dir"; then
+      warn "could not remove $dir — skipped"
+      failed=$((failed + 1))
+      continue
+    fi
+    info "removed"
+  done
+
+  step "Done"
+  info "$(( ${#candidates[@]} - failed )) removed, $failed skipped"
+}
+
 # ------------------------------------------------------------------- dispatch
 case "${1:-list}" in
   new)            shift; cmd_new "$@" ;;
   go|switch)      shift; cmd_go "$@" ;;
   rm|remove)      shift; cmd_rm "$@" ;;
   doctor)         shift; cmd_doctor "$@" ;;
+  restore)        shift; cmd_restore "$@" ;;
+  prune)          shift; cmd_prune "$@" ;;
   list|ls)        shift; cmd_list "$@" ;;
   -h|--help|help) usage ;;
   # No bare-branch shorthand on purpose: `p0wt eng-8346` reads equally as "go

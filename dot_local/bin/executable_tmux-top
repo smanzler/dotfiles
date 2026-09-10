@@ -8,23 +8,37 @@
 # A pane costs what its whole process subtree costs, not what its shell costs,
 # so each row sums the pane pid and every descendant.
 #
-# In the picker: enter jumps to the pane, ctrl-x kills its heaviest process,
-# ctrl-k kills the pane, alt-m / alt-c re-sort, ctrl-r refreshes.
+# Memory is the physical footprint from top, the number Activity Monitor shows.
+# ps rss counts resident pages only, so it reads far too low for anything the
+# compressor has touched — a 680MB language server can report 110MB — and it is
+# used only for a process top did not list. CPU stays the ps average since the
+# process started.
+#
+# In the picker: enter jumps to the pane, ctrl-x asks the program in it to stop and
+# leaves the pane alone, ctrl-k kills the pane, alt-m / alt-c re-sort, ctrl-r
+# refreshes.
+#
+# ctrl-x sends what the program answers to: ctrl-d twice to claude, esc then :qa! to
+# nvim, q to a pager, ctrl-c to everything else, twice if the first one is ignored.
+# A pane sitting at its shell has nothing to stop, so it gets a SIGTERM to the
+# heaviest process instead.
 
 set -uo pipefail
 
 SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-PANE_FMT='#{pane_id}	#{session_name}	#{window_index}	#{pane_index}	#{window_name}	#{pane_pid}	#{pane_current_path}'
+PANE_FMT='#{pane_id}	#{session_name}	#{window_index}	#{pane_index}	#{window_name}	#{pane_pid}	#{pane_current_path}	#{pane_current_command}'
 
 die() { echo "tmux-top: $*" >&2; exit 1; }
 
 # Aggregate one ps snapshot over each pane subtree.
 # Emits: pane_id, rss_kb, cpu, nproc, target, window, top_cmd, top_pid, path
 collect() {
-  local panes
+  local panes foot
   panes=$(mktemp) || die "cannot make a temp file"
+  foot=$(mktemp) || die "cannot make a temp file"
   tmux list-panes -a -F "$PANE_FMT" > "$panes" 2>/dev/null || die "no tmux server running"
-  ps -axo pid=,ppid=,rss=,pcpu=,comm= | awk -v panes="$panes" '
+  top -l 1 -stats pid,mem > "$foot" 2>/dev/null || true
+  ps -axo pid=,ppid=,rss=,pcpu=,comm= | awk -v panes="$panes" -v foot="$foot" '
     function walk(p,   i, k, m) {
       if (seen[p]) return
       seen[p] = 1
@@ -37,15 +51,28 @@ collect() {
     }
     BEGIN {
       while ((getline line < panes) > 0) {
-        if (split(line, f, "\t") < 7) continue
+        if (split(line, f, "\t") < 8) continue
         np++
         p_id[np] = f[1]; p_tgt[np] = f[2] ":" f[3] "." f[4]
-        p_win[np] = f[5]; p_pid[np] = f[6]; p_path[np] = f[7]
+        p_win[np] = f[5]; p_pid[np] = f[6]; p_path[np] = f[7]; p_fg[np] = f[8]
       }
       close(panes)
+      while ((getline line < foot) > 0) {
+        if (line !~ /^[0-9]+[ \t]/) continue
+        split(line, t, /[ \t]+/)
+        v = t[2]
+        u = substr(v, length(v), 1)
+        n = v + 0
+        if (u == "G")      n *= 1048576
+        else if (u == "M") n *= 1024
+        else if (u != "K") n /= 1024
+        fp[t[1]] = n
+      }
+      close(foot)
     }
     {
-      rss[$1] = $3; cpu[$1] = $4
+      rss[$1] = ($1 in fp) ? fp[$1] : $3
+      cpu[$1] = $4
       kids[$2] = kids[$2] " " $1
       c = $0
       sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[0-9]+[ \t]+[0-9.]+[ \t]+/, "", c)
@@ -57,12 +84,12 @@ collect() {
         split("", seen)
         nproc = 0; sum_rss = 0; sum_cpu = 0; best_rss = -1; best_pid = "-"; best_cmd = "?"
         walk(p_pid[i])
-        printf "%s\t%d\t%.1f\t%d\t%s\t%s\t%s\t%s\t%s\n",
-          p_id[i], sum_rss, sum_cpu, nproc, p_tgt[i], p_win[i], best_cmd, best_pid, p_path[i]
+        printf "%s\t%d\t%.1f\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+          p_id[i], sum_rss, sum_cpu, nproc, p_tgt[i], p_win[i], best_cmd, best_pid, p_path[i], p_fg[i]
       }
     }
   '
-  rm -f "$panes"
+  rm -f "$panes" "$foot"
 }
 
 # pane_id + one preformatted, coloured column for the picker.
@@ -100,8 +127,9 @@ preview() {
   local id=$1 row pids
   row=$(collect | awk -v id="$id" -F'\t' '$1 == id')
   [ -z "$row" ] && { echo "pane is gone"; return; }
-  printf '\033[1m%s\033[0m  %s  \033[90m%s\033[0m\n\n' \
+  printf '\033[1m%s\033[0m  %s  \033[90m%s\033[0m\n' \
     "$(cut -f5 <<<"$row")" "$(cut -f6 <<<"$row")" "$(cut -f9 <<<"$row")"
+  printf '\033[90mctrl-x sends %s\033[0m\n\n' "$(stop_hint "$(cut -f10 <<<"$row")")"
   pids=$(ps -axo pid=,ppid= | awk -v root="$(tmux display -p -t "$id" '#{pane_pid}' 2>/dev/null)" '
     { kids[$2] = kids[$2] " " $1 }
     END { stack[1] = root; top = 1
@@ -116,12 +144,59 @@ preview() {
   tmux capture-pane -p -t "$id" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -12
 }
 
-# Kill the heaviest process in a pane, never the pane shell itself.
-kill_top() {
-  local id=$1 row pid
-  row=$(collect | awk -v id="$id" -F'\t' '$1 == id')
-  pid=$(cut -f8 <<<"$row")
-  [ -n "$pid" ] && [ "$pid" != "-" ] && kill "$pid" 2>/dev/null
+# claude renames its process to its version, so tmux reports 2_1_258, not claude.
+is_claude() { case "$1" in claude|[0-9]*_[0-9]*_[0-9]*) return 0 ;; *) return 1 ;; esac; }
+
+# How to ask the program in a pane to stop, by its foreground command.
+stop_plan() {
+  if is_claude "$1"; then echo C-d; return; fi
+  case "$1" in
+    nvim|vim|view|nvi)                                 echo ":qa!" ;;
+    less|more|man|bat|lazygit|htop|btop|top|k9s|glow)  echo q ;;
+    zsh|bash|fish|sh|-zsh|-bash|login)                 echo TERM ;;
+    *)                                                 echo C-c ;;
+  esac
+}
+
+fg_name() { if is_claude "$1"; then echo claude; else echo "$1"; fi; }
+
+stop_hint() {
+  case "$(stop_plan "$1")" in
+    C-d)   echo "ctrl-d twice to $(fg_name "$1")" ;;
+    :qa!)  echo "esc then :qa! to $1" ;;
+    q)     echo "q to $1" ;;
+    TERM)  echo "SIGTERM to the heaviest process, nothing in the foreground" ;;
+    *)     echo "ctrl-c to $1" ;;
+  esac
+}
+
+fg_command() { tmux display -p -t "$1" '#{pane_current_command}' 2>/dev/null; }
+
+# Ask the program in a pane to stop and leave the pane itself alone. Sends the key a
+# second time only while the same command still holds the foreground, so a sequence
+# never lands in the shell that takes over.
+stop_pane() {
+  local id=$1 fg pid
+  fg=$(fg_command "$id") || return 1
+  [ -z "$fg" ] && return 1
+  case "$(stop_plan "$fg")" in
+    C-d)
+      tmux send-keys -t "$id" C-d
+      sleep 0.6
+      [ "$(fg_command "$id")" = "$fg" ] && tmux send-keys -t "$id" C-d ;;
+    :qa!)
+      tmux send-keys -t "$id" Escape
+      tmux send-keys -t "$id" ':qa!' Enter ;;
+    q)
+      tmux send-keys -t "$id" q ;;
+    TERM)
+      pid=$(collect | awk -v id="$id" -F'\t' '$1 == id { print $8 }')
+      [ -n "$pid" ] && [ "$pid" != "-" ] && kill "$pid" 2>/dev/null ;;
+    *)
+      tmux send-keys -t "$id" C-c
+      sleep 0.8
+      [ "$(fg_command "$id")" = "$fg" ] && tmux send-keys -t "$id" C-c ;;
+  esac
 }
 
 teleport() {
@@ -143,12 +218,12 @@ pick() {
   out=$(list "$key" | fzf --ansi --delimiter="$(printf '\t')" --with-nth=2 \
     --height=100% --border=none --info=inline --pointer='>' \
     --color=bg:-1,gutter:-1,preview-bg:-1,border:-1 \
-    --header='enter jump · ctrl-x kill top proc · ctrl-k kill pane · alt-m mem · alt-c cpu' \
+    --header='enter jump · ctrl-x stop the program · ctrl-k kill pane · alt-m mem · alt-c cpu' \
     --preview="$SELF --preview {1}" --preview-window='right,50%,border-left' \
     --bind="ctrl-r:reload($reload $key)" \
     --bind="alt-m:reload($reload mem)" \
     --bind="alt-c:reload($reload cpu)" \
-    --bind="ctrl-x:execute-silent($SELF --kill {1})+reload(sleep 0.4; $reload $key)" \
+    --bind="ctrl-x:execute-silent($SELF --stop {1})+reload(sleep 0.4; $reload $key)" \
     --bind="ctrl-k:execute-silent(tmux kill-pane -t {1})+reload(sleep 0.4; $reload $key)")
   [ -z "$out" ] && return 0
   teleport "$(cut -f1 <<<"$out")"
@@ -160,7 +235,7 @@ case "${1:-}" in
   --plain)   list "${2:-mem}" | cut -f2- ;;
   --list)    list "${2:-mem}" ;;
   --preview) preview "${2:?pane id}" ;;
-  --kill)    kill_top "${2:?pane id}" ;;
-  -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  --stop)    stop_pane "${2:?pane id}" ;;
+  -h|--help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0" ;;
   *)         die "unknown arg '$1'" ;;
 esac

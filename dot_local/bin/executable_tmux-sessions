@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# tmux-sessions — fzf session switcher, newest-used first.
+#
+# Bound to prefix s, in a popup. fzf calls back into this script for the
+# preview and the kill: it shell-quotes a {1} substitution, so a placeholder
+# must stay outside quotes and arrive as its own argument.
+
+set -uo pipefail
+
+SELF=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
+
+# A session target needs both the '=' and the trailing ':'. Bare -t
+# prefix-matches, and '=' alone can lose to a window of the same name.
+list() {
+  local cur name wins mark
+  cur=$(tmux display-message -p '#S' 2>/dev/null)
+  tmux list-sessions -F '#{session_last_attached}|#{session_name}|#{session_windows}' 2>/dev/null \
+    | sort -t'|' -k1 -rn \
+    | while IFS='|' read -r _ name wins; do
+        mark=''
+        [ "$name" = "$cur" ] && mark='*'
+        printf '%-24s %2s  %s\n' "$name" "$wins" "$mark"
+      done
+}
+
+case "${1:-}" in
+  --list)
+    list; exit 0 ;;
+  --preview)
+    tmux list-windows -t "=${2:-}:" -F '#{window_index}: #{window_name}' 2>&1
+    echo
+    tmux capture-pane -ep -t "=${2:-}:" 2>&1
+    exit 0 ;;
+  --kill)
+    tmux kill-session -t "=${2:-}:" 2>/dev/null
+    exit 0 ;;
+esac
+
+# The session name is the first field, so fzf's {1} resolves to it. Do not add
+# --with-nth: it makes {1} read the displayed line instead of the input line.
+sel=$(list | fzf \
+  --no-multi \
+  --prompt='session ❯ ' \
+  --header='enter: switch   ctrl-x: kill' \
+  --preview="$SELF --preview {1}" \
+  --preview-window='right:60%' \
+  --bind="ctrl-x:execute-silent($SELF --kill {1})+reload($SELF --list)") || exit 0
+
+name=$(printf '%s' "$sel" | awk '{print $1}')
+[ -n "$name" ] || exit 0
+
+if [ -n "${TMUX:-}" ]; then
+  tmux switch-client -t "=$name:"
+else
+  tmux attach -t "=$name:"
+fi

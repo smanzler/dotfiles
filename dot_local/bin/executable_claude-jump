@@ -5,14 +5,16 @@
 #   claude-jump --status # sort by status instead of recency
 #   claude-jump --plain  # print the table, no picker
 #
-# Age is when the last run finished, read off the pane ("done 5:24 PM"), so a busy
-# session shows the end of its previous run. With no run on screen it falls back to
-# the newest transcript write for the working directory, then to window activity.
+# Age is when the last run finished, read off the pane ("done 5:24 PM"). A busy
+# session has not finished its run, so it carries no age and heads the list in either
+# order. With no run on screen the age falls back to the newest transcript
+# write for the working directory, then to tmux window activity.
 #
 # Status is read off the pane screen: input = Claude is waiting for an answer,
 # busy = it is working, draft = unsent text in the prompt, idle = your turn.
 #
-# In the picker: enter jumps to the pane, alt-a / alt-s re-sort, ctrl-r refreshes.
+# In the picker: enter jumps to the pane, alt-a sorts busy first then newest to
+# oldest, alt-s by status (busy, input, draft, idle), ctrl-r refreshes.
 
 set -uo pipefail
 
@@ -69,25 +71,33 @@ claude_panes() {
 # Claude printed when its last run finished.
 pane_state() {
   tmux capture-pane -p -t "$1" 2>/dev/null | awk '
-    /esc to interrupt/                                     { busy = 1 }
-    /Do you want|Would you like|Continue\?|❯ [0-9]+\./     { ask = 1 }
-    /Do you want|Would you like|Continue\?/                { q = $0 }
-    /…[ ]*\(/                                              { spin = $0 }
+    # The spinner line, not "esc to interrupt": claude drops that hint from the
+    # status line while you type in the prompt box.
+    /…[[:space:]]*\([0-9]+[smh]/                            { spin = $0 }
+    /esc to interrupt/                                     { hint = 1 }
+    /Do you want|Would you like|Continue\?/                 { q = $0 }
+    /Do you want|Would you like|Continue\?|❯ [0-9]+\./       { ask = 1 }
     /^[[:space:]]*⏺[[:space:]]/                            { did = $0 }
     /^[[:space:]]*[✻✳][[:space:]]/                          { summary = $0 }
-    /^[[:space:]]*❯[[:space:]]+[^[:space:]]/               { draft = $0 }
+    # Every submitted message keeps its ❯ on screen, so only the last one is the
+    # input box, and it is a draft only when it still holds text.
+    /^[[:space:]]*❯/                                       { box = $0 }
     match($0, /done [0-9]+:[0-9]+ ?[AP]M/)                 { done = substr($0, RSTART + 5, RLENGTH - 5) }
     function clean(s) {
+      sub(/^[[:space:]]*[│┃|][[:space:]]*/, "", s)
       sub(/^[[:space:]]*[⏺✻✳·❯*✽✢][[:space:]]*/, "", s)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
       gsub(/[[:space:]]+/, " ", s)
       return s
     }
     END {
-      if (ask)        printf "0\tinput\t%s\t%s\n", clean(q ? q : "waiting for an answer"), done
-      else if (busy)  printf "1\tbusy\t%s\t%s\n", clean(spin ? spin : "working"), done
-      else if (draft) printf "2\tdraft\t%s\t%s\n", clean(draft), done
-      else            printf "3\tidle\t%s\t%s\n", clean(did ? did : summary), done
+      draft = (box ~ /^[[:space:]]*❯[[:space:]]+[^[:space:]]/) ? box : ""
+      # A spinner beats a question: while claude works, any prompt box on screen is
+      # spent output, and a half-typed line is still just a draft.
+      if (spin || hint)   printf "0\tbusy\t%s\t%s\n", clean(spin ? spin : "working"), done
+      else if (ask)       printf "1\tinput\t%s\t%s\n", clean(q ? q : "waiting for an answer"), done
+      else if (draft)     printf "2\tdraft\t%s\t%s\n", clean(draft), done
+      else                printf "3\tidle\t%s\t%s\n", clean(did ? did : summary), done
     }
   '
 }
@@ -128,8 +138,9 @@ collect() {
     fi
     [ "$seen_at" -eq 0 ] && seen_at=$(last_message "$cwd")
     [ "${seen_at:-0}" -eq 0 ] && seen_at=$act
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$id" "$seen_at" "$rank" "$label" "$tgt" "$win" "$cwd" "$pid" "$rss" "$ctx"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$id" "$seen_at" "$rank" "$label" "$tgt" "$win" "$cwd" "$pid" "$rss" "$ctx" \
+      "$([ "$label" = busy ] && echo 1 || echo 0)"
   done <<<"$rows"
 }
 
@@ -138,7 +149,7 @@ list() {
   if [ "$mode" = status ]; then
     sorted=$(collect | sort -t"$(printf '\t')" -k3,3n -k2,2nr)
   else
-    sorted=$(collect | sort -t"$(printf '\t')" -k2,2nr)
+    sorted=$(collect | sort -t"$(printf '\t')" -k11,11nr -k2,2nr)
   fi
   [ -z "$sorted" ] && { echo "no claude sessions in tmux" >&2; return 0; }
   printf '%s\n' "$sorted" | awk -v home="$HOME" -v self="${TMUX_PANE:-}" -v now="$(date +%s)" '
@@ -160,21 +171,24 @@ list() {
       proj = $7; sub(/.*\//, "", proj)
       here = ($1 == self) ? "\033[34m>\033[0m" : " "
       printf "%s\t%s %s%s %-5s\033[0m \033[90m%4s\033[0m  \033[36m%-13s\033[0m \033[35m%-12s\033[0m %-22s \033[90m%s\033[0m\n",
-        $1, here, col[$4], icon[$4], $4, ago($2), cut($5, 13), cut($6, 12), cut(proj, 22), cut($10, 70)
+        $1, here, col[$4], icon[$4], $4, ($4 == "busy" ? "-" : ago($2)),
+        cut($5, 13), cut($6, 12), cut(proj, 22), cut($10, 70)
     }
   '
 }
 
 preview() {
-  local id=$1 row cwd pid branch lines short
+  local id=$1 row cwd pid branch lines short mem
   row=$(collect "$id")
   [ -z "$row" ] && { echo "session is gone"; return; }
   cwd=$(cut -f7 <<<"$row"); pid=$(cut -f8 <<<"$row")
   branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)
   short=$cwd; case "$cwd" in "$HOME"/*) short="~${cwd#"$HOME"}" ;; esac
   printf '\033[1m%s\033[0m  \033[90m%s\033[0m\n' "$(cut -f5 <<<"$row")" "$short"
-  printf '\033[90mpid %s · %dMB%s · last run finished %s\033[0m\n\n' \
-    "$pid" "$(( $(cut -f9 <<<"$row") / 1024 ))" "${branch:+ · $branch}" \
+  # top reports the physical footprint; ps rss reads low once memory is compressed.
+  mem=$(top -l 1 -pid "$pid" -stats mem 2>/dev/null | awk '/^[0-9]+[[:space:]]+[0-9]/ { print $2; exit }')
+  printf '\033[90mpid %s · %s%s · last run finished %s\033[0m\n\n' \
+    "$pid" "${mem:-$(( $(cut -f9 <<<"$row") / 1024 ))M}" "${branch:+ · $branch}" \
     "$(date -r "$(cut -f2 <<<"$row")" '+%H:%M' 2>/dev/null)"
   lines=$(( ${FZF_PREVIEW_LINES:-40} - 4 ))
   [ "$lines" -lt 10 ] && lines=10
@@ -214,6 +228,6 @@ case "${1:-}" in
   --plain)     list "${2:-recent}" | cut -f2- ;;
   --list)      list "${2:-recent}" ;;
   --preview)   preview "${2:?pane id}" ;;
-  -h|--help)   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0" ;;
   *)           die "unknown arg '$1'" ;;
 esac
