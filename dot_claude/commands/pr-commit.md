@@ -1,7 +1,7 @@
 ---
 description: Commit the pending work, then open a draft PR whose description fills the repo's PR template
 argument-hint: [domain or extra context]
-allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git add:*), Bash(git commit:*), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(git symbolic-ref:*), Bash(git config:*), Bash(git branch:*), Bash(git ls-files:*), Bash(git show:*), Bash(git push:*), Bash(gh pr:*), Bash(gh repo:*), Read, Glob
+allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git commit:*), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(git symbolic-ref:*), Bash(git config:*), Bash(git branch:*), Bash(git ls-files:*), Bash(git show:*), Bash(git push:*), Bash(gh pr:*), Bash(gh repo:*), Read, Glob
 ---
 
 Commit the work in progress, then open a draft pull request that fills the repo's PR template.
@@ -24,10 +24,11 @@ Stop and ask the user for a branch name if HEAD is `$BASE`. Do not open a pull r
 
 ## 2. Commit the pending work
 
-Do this step only when the tree is dirty. Skip it when `git status --short` shows no tracked change, and say that the branch was already committed.
+Do this step only when something is staged — `git status --short` shows a mark in the first column.
 
-- Anything staged: commit exactly that. Nothing staged: run `git add -u` to stage the tracked changes.
-- Never add an untracked file. List the untracked files for the user instead.
+- Commit exactly what is staged, and nothing else.
+- Never run `git add`, and never stage a file. The user stages the work they want in the commit. An unstaged change and an untracked file are deliberate: leave them in the working tree and list them for the user.
+- Nothing staged: make no commit. Say that the branch was already committed and go to step 3.
 - Message: one subject line only, no body. The PR description holds the prose.
 
 ## 3. Write the PR title and description
@@ -73,5 +74,7 @@ Write the description to a temporary file and give it to `gh` with `--body-file`
 Print the commit subject, the pull request URL, and the sections you left for the user to fill.
 
 ## Rules
+
+Never stage a file. `git add` is not yours to run; the staged set is the user's choice of what the commit holds.
 
 The user is the only author of the commit and the only author of the pull request. Do not add a `Co-Authored-By` trailer, a `Generated with` line, a footer, or any other trailer to the commit message or to the pull request description, even if a global rule asks for one.

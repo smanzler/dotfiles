@@ -2,7 +2,7 @@
 # tmux-sessions — fzf session switcher, newest-used first.
 #
 # Bound to prefix s, in a popup. fzf calls back into this script for the
-# preview and the kill: it shell-quotes a {1} substitution, so a placeholder
+# preview and the kill: it shell-quotes a {n} substitution, so a placeholder
 # must stay outside quotes and arrive as its own argument.
 
 set -uo pipefail
@@ -12,14 +12,16 @@ SELF=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
 # A session target needs both the '=' and the trailing ':'. Bare -t
 # prefix-matches, and '=' alone can lose to a window of the same name.
 list() {
-  local cur name wins mark
+  local cur name wins mark i
   cur=$(tmux display-message -p '#S' 2>/dev/null)
+  i=0
   tmux list-sessions -F '#{session_last_attached}|#{session_name}|#{session_windows}' 2>/dev/null \
     | sort -t'|' -k1 -rn \
     | while IFS='|' read -r _ name wins; do
+        i=$((i + 1))
         mark=''
         [ "$name" = "$cur" ] && mark='*'
-        printf '%-24s %2s  %s\n' "$name" "$wins" "$mark"
+        printf '\033[38;5;8m%2s\033[0m  %-24s %2s  %s\n' "$i" "$name" "$wins" "$mark"
       done
 }
 
@@ -36,17 +38,19 @@ case "${1:-}" in
     exit 0 ;;
 esac
 
-# The session name is the first field, so fzf's {1} resolves to it. Do not add
-# --with-nth: it makes {1} read the displayed line instead of the input line.
+# The session name is the second field, so fzf's {2} resolves to it. Do not add
+# --with-nth: it makes {2} read the displayed line instead of the input line.
+# --ansi keeps the colour out of {2} and out of the printed selection.
 sel=$(list | fzf \
+  --ansi \
   --no-multi \
   --prompt='session ❯ ' \
   --header='enter: switch   ctrl-x: kill' \
-  --preview="$SELF --preview {1}" \
+  --preview="$SELF --preview {2}" \
   --preview-window='right:60%' \
-  --bind="ctrl-x:execute-silent($SELF --kill {1})+reload($SELF --list)") || exit 0
+  --bind="ctrl-x:execute-silent($SELF --kill {2})+reload($SELF --list)") || exit 0
 
-name=$(printf '%s' "$sel" | awk '{print $1}')
+name=$(printf '%s' "$sel" | awk '{print $2}')
 [ -n "$name" ] || exit 0
 
 if [ -n "${TMUX:-}" ]; then
