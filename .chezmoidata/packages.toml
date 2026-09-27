@@ -9,3 +9,6 @@ base = [
   "zsh-syntax-highlighting",
   "zsh-autosuggestions"
 ]
+darwin = [
+  "terminal-notifier"
+]

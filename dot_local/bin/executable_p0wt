@@ -8,12 +8,15 @@
 #
 # Usage:
 #   p0wt                        # list (same as `p0wt list`)
+#   p0wt new                    # pick a branch (or type a new name) with fzf
 #   p0wt new BRANCH             # worktree for BRANCH + tmux window + p0init
 #   p0wt new BRANCH --switch    # ...and jump to the window
 #   p0wt new BRANCH --base main # branch off something other than the current dir
 #   p0wt go NAME                # focus (or open) a worktree's tmux window
 #   p0wt restore                # a window for every worktree, newest first
-#   p0wt prune                  # remove worktrees whose branch is done
+#   p0wt prune                  # pick any worktrees to remove, done ones first
+#   p0wt prune --yes            # ...no picker, remove every done one
+#   p0wt prune --force          # ...do not ask about uncommitted changes
 #   p0wt rm NAME                # p0finish --window, then delete the worktree
 #   p0wt rm NAME --force        # ...even with uncommitted changes
 #   p0wt doctor                 # prune stale registrations, report unbootstrapped
@@ -34,7 +37,7 @@ info() { printf '  %s\n' "$*"; }
 warn() { printf '\033[33m  %s\033[0m\n' "$*"; }
 die()  { printf '\033[31mp0wt: %s\033[0m\n' "$*" >&2; exit 1; }
 run()  { if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi; }
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ---------------------------------------------------------------- repo context
 # Every worktree of a repo can list all the others, so any one of them works as
@@ -64,6 +67,10 @@ worktree_dirs() {
 
 branch_of() {
   git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null
+}
+
+is_dirty() {
+  [ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]
 }
 
 # Short name, via p0name so there is exactly one implementation of the mapping.
@@ -190,6 +197,63 @@ open_window() {
 }
 
 # --------------------------------------------------------------------- new
+# A typed name is prose until it is not: whitespace becomes dashes, so
+# "eng-8346 fix the thing" is a legal ref.
+slug() {
+  printf '%s' "$1" | tr -s '[:space:]' '-' | sed 's/^-*//; s/-*$//'
+  printf '\n'
+}
+
+# Every branch `new` could check out, newest commit first: local ones, then the
+# $REMOTE-only ones. Field 1 is the branch, field 2 is what fzf shows. A branch
+# some worktree already holds is tagged, because `new` will bounce off it.
+branch_choices() {
+  local entry="$1" ref rel held seen=""
+  held=$(git -C "$entry" worktree list --porcelain \
+    | awk '/^branch /{sub(/^refs\/heads\//, "", $2); print " " $2 " "}' | tr -d '\n')
+
+  while IFS="$(printf '\t')" read -r ref rel; do
+    seen="$seen $ref "
+    case "$held" in
+      *" $ref "*) printf '%s\t\033[36m%-6s\033[0m %-58s %s\n' "$ref" "wt" "$ref" "$rel" ;;
+      *)          printf '%s\t%-6s %-58s %s\n' "$ref" "local" "$ref" "$rel" ;;
+    esac
+  done < <(git -C "$entry" for-each-ref --sort=-committerdate \
+    --format="%(refname:short)%09%(committerdate:relative)" refs/heads)
+
+  while IFS="$(printf '\t')" read -r ref rel; do
+    ref=${ref#"$REMOTE"/}
+    [ "$ref" = HEAD ] && continue
+    case "$seen" in *" $ref "*) continue ;; esac
+    printf '%s\t%-6s %-58s %s\n' "$ref" "$REMOTE" "$ref" "$rel"
+  done < <(git -C "$entry" for-each-ref --sort=-committerdate \
+    --format="%(refname:short)%09%(committerdate:relative)" "refs/remotes/$REMOTE")
+}
+
+# Pick a branch, or name one that does not exist yet. --print-query puts the
+# typed text on line 1 and the highlighted row, if any, on line 2 — so a query
+# that matches nothing is still an answer. Esc (130) is not.
+pick_branch() {
+  local out status query choice
+  out=$(fzf --print-query --ansi \
+    --delimiter="$(printf '\t')" --with-nth=2 \
+    --height=60% --border=none --info=inline --pointer='>' \
+    --color=bg:-1,gutter:-1,border:-1 \
+    --prompt='branch > ' \
+    --header='enter checkout · type a name that matches nothing to create it' \
+    < <(branch_choices "$1"))
+  status=$?
+  [ "$status" -ge 2 ] && return 1
+
+  query=$(sed -n 1p <<<"$out")
+  choice=$(sed -n 2p <<<"$out")
+  if [ -n "$choice" ]; then
+    cut -f1 <<<"$choice"
+  else
+    slug "$query"
+  fi
+}
+
 cmd_new() {
   local branch="" base="" switch=0
   while [ $# -gt 0 ]; do
@@ -198,14 +262,22 @@ cmd_new() {
       --base)      base="${2:?--base needs a ref}"; shift ;;
       --dry-run|-n) DRY=1 ;;
       -*)          die "unknown flag '$1' (try --help)" ;;
-      *)           [ -n "$branch" ] && die "one branch at a time"; branch="$1" ;;
+      # Loose words are one name: slug() joins them with dashes below.
+      *)           branch="${branch:+$branch }$1" ;;
     esac
     shift
   done
-  [ -n "$branch" ] || die "which branch? e.g. p0wt new simonmanzler/eng-1234-thing"
-
   local entry dir
   entry=$(git_entry) || die "not in a git worktree and no $REPOS/app to fall back on"
+
+  if [ -z "$branch" ] && command -v fzf >/dev/null 2>&1 && [ -c /dev/tty ]; then
+    branch=$(pick_branch "$entry") || die "nothing picked"
+  fi
+  [ -n "$branch" ] || die "which branch? e.g. p0wt new simonmanzler/eng-1234-thing"
+
+  branch=$(slug "$branch")
+  git -C "$entry" check-ref-format --branch "$branch" >/dev/null 2>&1 \
+    || die "'$branch' is not a legal branch name"
   dir="$REPOS/$branch"
 
   step "Target"
@@ -511,6 +583,25 @@ cmd_restore() {
 }
 
 # -------------------------------------------------------------------- prune
+# The checkbox prompt: space marks a row, enter confirms. Rows come in as
+# "dir<TAB>display" and only the dir is printed back. fzf reads the keyboard from
+# /dev/tty, so this still works with stdout piped. With nothing marked fzf
+# returns the highlighted row, which is why enter always removes at least one.
+pick_worktrees() {
+  local out
+  out=$(fzf --multi --ansi \
+    --delimiter="$(printf '\t')" --with-nth=2 \
+    --height=60% --border=none --info=inline --pointer='>' --marker='*' \
+    --color=bg:-1,gutter:-1,border:-1 \
+    --header='space select · enter remove · ctrl-a all · esc cancel' \
+    --bind='space:toggle+down' \
+    --bind='ctrl-a:select-all' \
+    --bind='ctrl-d:deselect-all' \
+    < <(printf '%s\n' "$@")) || return 1
+  [ -n "$out" ] || return 1
+  cut -f1 <<<"$out"
+}
+
 # What "done with a branch" can actually be detected as. Closing the tmux window
 # is not usable as the signal — a reboot closes every window — so this asks git
 # instead, and the verdict column always says which test fired.
@@ -527,7 +618,7 @@ prune_verdict() {
 
   [ "$dir" = "$(main_worktree "$entry")" ] && { echo "keep main"; return; }
   case "$PWD/" in "$dir"/*) echo "keep current"; return ;; esac
-  [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ] && { echo "keep dirty"; return; }
+  is_dirty "$dir" && { echo "keep dirty"; return; }
 
   branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) \
     || { echo "keep detached"; return; }
@@ -550,10 +641,11 @@ prune_verdict() {
 }
 
 cmd_prune() {
-  local yes=0 include_local=0
+  local yes=0 include_local=0 force=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --yes|-y)        yes=1 ;;
+      --force|-f)      force=1 ;;
       --include-local) include_local=1 ;;
       --dry-run|-n)    DRY=1 ;;
       -*) die "unknown flag '$1'" ;;
@@ -580,7 +672,7 @@ cmd_prune() {
   run "git -C '$entry' fetch --prune '$REMOTE'"
 
   step "Verdicts (base: $REMOTE/$base)"
-  local candidates=() verdict action reason w
+  local candidates=() rows=() others=() verdict action reason row w
   w=$(name_width "$entry")
   printf "  \033[1m%-${w}s %-11s %s\033[0m\n" NAME VERDICT BRANCH
   while read -r dir; do
@@ -598,17 +690,38 @@ cmd_prune() {
     printf "  \033[%sm%-${w}s %-11s %s\033[0m\n" "$color" \
       "$(short_name "$dir")" "$reason" "$(branch_of "$dir")"
 
-    [ "$action" = prune ] && candidates+=("$dir")
+    # Everything git can actually remove is offered to the picker, verdict and
+    # all — the verdict orders the list, it does not limit it. Only the main
+    # worktree and the one you are standing in are left out: git refuses both.
+    row=$(printf '%s\t%-*s  %-11s %s' "$dir" "$w" \
+      "$(short_name "$dir")" "$reason" "$(branch_of "$dir")")
+    if [ "$action" = prune ]; then
+      candidates+=("$dir")
+      rows+=("$row")
+    elif [ "$reason" != main ] && [ "$reason" != current ]; then
+      others+=("$row")
+    fi
   done < <(worktree_dirs "$entry")
+
+  [ ${#others[@]} -gt 0 ] && rows+=("${others[@]}")
+
+  # Without fzf or a terminal there is nothing to pick with, so keep the old
+  # all-or-nothing question as the fallback.
+  local pick=0
+  if [ "$yes" != 1 ] && [ "$DRY" != 1 ] && [ ${#rows[@]} -gt 0 ] \
+     && command -v fzf >/dev/null 2>&1 && [ -c /dev/tty ]; then
+    pick=1
+  fi
 
   if [ ${#candidates[@]} -eq 0 ]; then
     step "Nothing to prune"
     [ "$include_local" = 1 ] || info "pass --include-local to also consider no-upstream branches"
-    return 0
+    [ "$pick" = 1 ] || return 0
+    info "pick by hand instead — ${#rows[@]} worktrees to choose from"
+  else
+    step "Prunable: ${#candidates[@]}"
+    info "branches are kept, so nothing but gitignored files and a yarn install is lost"
   fi
-
-  step "Prunable: ${#candidates[@]}"
-  info "branches are kept, so nothing but gitignored files and a yarn install is lost"
 
   if [ "$DRY" = 1 ]; then
     for dir in "${candidates[@]}"; do
@@ -618,14 +731,53 @@ cmd_prune() {
     return 0
   fi
 
-  if [ "$yes" != 1 ]; then
+  local ans=""
+  if [ "$pick" = 1 ]; then
+    local picked=()
+    while read -r dir; do
+      [ -n "$dir" ] && picked+=("$dir")
+    done < <(pick_worktrees "${rows[@]}")
+    [ ${#picked[@]} -eq 0 ] && { warn "Nothing selected — nothing changed."; return 0; }
+    candidates=("${picked[@]}")
+    step "Selected: ${#candidates[@]}"
+    for dir in "${candidates[@]}"; do
+      info "$(short_name "$dir")  ($(branch_of "$dir"))"
+    done
+  elif [ "$yes" != 1 ]; then
     printf '\n  Remove these %s worktrees? [y/N] ' "${#candidates[@]}"
-    local ans=""
     read -r ans </dev/tty || ans=""
     case "$ans" in
       y|Y|yes|YES) ;;
       *) warn "Aborted — nothing changed."; return 0 ;;
     esac
+  fi
+
+  # The picker can reach a dirty worktree, and remove_worktree always passes
+  # --force, so this question is the only thing between a wrong mark and
+  # uncommitted work. Answer no and the dirty ones drop out, the rest go.
+  if [ "$force" != 1 ]; then
+    local dirty=() keep=()
+    for dir in "${candidates[@]}"; do
+      is_dirty "$dir" && dirty+=("$dir")
+    done
+    if [ ${#dirty[@]} -gt 0 ]; then
+      step "Uncommitted changes in ${#dirty[@]}"
+      for dir in "${dirty[@]}"; do
+        warn "$(short_name "$dir")  ($dir)"
+      done
+      printf '\n  Remove these too? [y/N] '
+      read -r ans </dev/tty || ans=""
+      case "$ans" in
+        y|Y|yes|YES) ;;
+        *) for dir in "${candidates[@]}"; do
+             is_dirty "$dir" || keep+=("$dir")
+           done
+           [ ${#keep[@]} -eq 0 ] && { warn "Nothing left — nothing changed."; return 0; }
+           candidates=("${keep[@]}")
+           info "keeping the dirty ones, ${#candidates[@]} to go"
+           ;;
+      esac
+    fi
   fi
 
   local failed=0

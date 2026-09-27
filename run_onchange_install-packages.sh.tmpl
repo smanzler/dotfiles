@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 {{ if eq $.chezmoi.os "darwin" }}
-brew install {{ join " " .packages.base }}
+brew install {{ join " " .packages.base }} {{ join " " .packages.darwin }}
 {{ else if eq $.chezmoi.os "linux" }}
 {{   if eq $.chezmoi.osRelease.id "arch" }}
 sudo pacman -S --noconfirm {{ join " " .packages.base }}
