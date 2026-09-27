@@ -45,9 +45,10 @@ sel=$(list | fzf \
   --ansi \
   --no-multi \
   --prompt='session ❯ ' \
-  --header='enter: switch   ctrl-x: kill' \
+  --header='enter: switch   x: kill' \
   --preview="$SELF --preview {2}" \
   --preview-window='right:60%' \
+  --bind="x:transform:[ -n {q} ] && echo 'put(x)' || echo 'trigger(ctrl-x)'" \
   --bind="ctrl-x:execute-silent($SELF --kill {2})+reload($SELF --list)") || exit 0
 
 name=$(printf '%s' "$sel" | awk '{print $2}')

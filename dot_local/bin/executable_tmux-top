@@ -14,12 +14,12 @@
 # used only for a process top did not list. CPU stays the ps average since the
 # process started.
 #
-# In the picker: enter jumps to the pane, ctrl-x asks the program in it to stop and
-# leaves the pane alone, ctrl-k kills the pane, alt-m / alt-c re-sort, ctrl-r
-# refreshes.
+# In the picker: enter jumps to the pane, x (on an empty query) or ctrl-x asks the
+# program in it to stop and leaves the pane alone, ctrl-k kills the pane, alt-m /
+# alt-c re-sort, ctrl-r refreshes.
 #
-# ctrl-x sends what the program answers to: ctrl-d twice to claude, esc then :qa! to
-# nvim, q to a pager, ctrl-c to everything else, twice if the first one is ignored.
+# The stop key sends what the program answers to: ctrl-d twice to claude, esc then
+# :qa! to nvim, q to a pager, ctrl-c to everything else, twice if the first one is ignored.
 # A pane sitting at its shell has nothing to stop, so it gets a SIGTERM to the
 # heaviest process instead.
 
@@ -129,7 +129,7 @@ preview() {
   [ -z "$row" ] && { echo "pane is gone"; return; }
   printf '\033[1m%s\033[0m  %s  \033[90m%s\033[0m\n' \
     "$(cut -f5 <<<"$row")" "$(cut -f6 <<<"$row")" "$(cut -f9 <<<"$row")"
-  printf '\033[90mctrl-x sends %s\033[0m\n\n' "$(stop_hint "$(cut -f10 <<<"$row")")"
+  printf '\033[90mx sends %s\033[0m\n\n' "$(stop_hint "$(cut -f10 <<<"$row")")"
   pids=$(ps -axo pid=,ppid= | awk -v root="$(tmux display -p -t "$id" '#{pane_pid}' 2>/dev/null)" '
     { kids[$2] = kids[$2] " " $1 }
     END { stack[1] = root; top = 1
@@ -218,11 +218,12 @@ pick() {
   out=$(list "$key" | fzf --ansi --delimiter="$(printf '\t')" --with-nth=2 \
     --height=100% --border=none --info=inline --pointer='>' \
     --color=bg:-1,gutter:-1,preview-bg:-1,border:-1 \
-    --header='enter jump · ctrl-x stop the program · ctrl-k kill pane · alt-m mem · alt-c cpu' \
+    --header='enter jump · x stop the program · ctrl-k kill pane · alt-m mem · alt-c cpu' \
     --preview="$SELF --preview {1}" --preview-window='right,50%,border-left' \
     --bind="ctrl-r:reload($reload $key)" \
     --bind="alt-m:reload($reload mem)" \
     --bind="alt-c:reload($reload cpu)" \
+    --bind="x:transform:[ -n {q} ] && echo 'put(x)' || echo 'trigger(ctrl-x)'" \
     --bind="ctrl-x:execute-silent($SELF --stop {1})+reload(sleep 0.4; $reload $key)" \
     --bind="ctrl-k:execute-silent(tmux kill-pane -t {1})+reload(sleep 0.4; $reload $key)")
   [ -z "$out" ] && return 0
