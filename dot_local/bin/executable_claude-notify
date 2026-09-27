@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# claude-notify — Claude Code hook. Notify with the project name; a click focuses the
+# tmux pane of that session and raises Ghostty.
+#
+#   claude-notify [MESSAGE]      # hook JSON on stdin; MESSAGE replaces its "message"
+#   claude-notify --focus PANE   # select PANE in the attached tmux client
+#
+# Subtitle is the origin repo name, else the git root name, else the directory name.
+
+set -uo pipefail
+
+# terminal-notifier runs -execute with a bare PATH.
+TMUX_BIN=$(command -v tmux || echo /opt/homebrew/bin/tmux)
+TERMINAL_APP=com.mitchellh.ghostty
+ICON="$HOME/.local/share/claude-notify/claude.png"
+
+focus() {
+  "$TMUX_BIN" switch-client -t "$1"
+  "$TMUX_BIN" select-window -t "$1"
+  "$TMUX_BIN" select-pane -t "$1"
+  open -b "$TERMINAL_APP"
+}
+
+project() {
+  local url root
+  url=$(git -C "$1" remote get-url origin 2>/dev/null)
+  if [ -n "$url" ]; then
+    url=${url%.git}
+    echo "${url##*[/:]}"
+    return
+  fi
+  root=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || root=$1
+  basename "$root"
+}
+
+notify() {
+  local input cwd message subtitle self
+  input=$(cat)
+  cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  [ -z "$cwd" ] && cwd=$PWD
+  message=${1:-$(jq -r '.message // empty' <<<"$input" 2>/dev/null)}
+  [ -z "$message" ] && message="Claude Code needs your attention"
+  subtitle=$(project "$cwd")
+
+  self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+  local args=(-title Claude -subtitle "$subtitle" -message "$message" -group "claude-${TMUX_PANE:-$cwd}")
+  [ -f "$ICON" ] && args+=(-contentImage "$ICON")
+  if [ -n "${TMUX_PANE:-}" ]; then
+    args+=(-execute "$(printf '%q --focus %q' "$self" "$TMUX_PANE")")
+  else
+    args+=(-activate "$TERMINAL_APP")
+  fi
+  command -v terminal-notifier >/dev/null && terminal-notifier "${args[@]}" >/dev/null 2>&1 && return
+  osascript - "$message" Claude "$subtitle" <<'OSA'
+on run argv
+  display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv)
+end run
+OSA
+}
+
+case "${1:-}" in
+  --focus) focus "${2:?pane id}" ;;
+  -h|--help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0" ;;
+  *) notify "$@" ;;
+esac
