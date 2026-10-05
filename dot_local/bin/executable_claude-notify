@@ -11,6 +11,8 @@ set -uo pipefail
 
 # terminal-notifier runs -execute with a bare PATH.
 TMUX_BIN=$(command -v tmux || echo /opt/homebrew/bin/tmux)
+# The terminal-notifier 2.0 ruby gem can come first in PATH and does not exit.
+NOTIFIER=${HOMEBREW_PREFIX:-/opt/homebrew}/bin/terminal-notifier
 TERMINAL_APP=com.mitchellh.ghostty
 ICON="$HOME/.local/share/claude-notify/claude.png"
 
@@ -50,7 +52,7 @@ notify() {
   else
     args+=(-activate "$TERMINAL_APP")
   fi
-  command -v terminal-notifier >/dev/null && terminal-notifier "${args[@]}" >/dev/null 2>&1 && return
+  [ -x "$NOTIFIER" ] && "$NOTIFIER" "${args[@]}" >/dev/null 2>&1 && return
   osascript - "$message" Claude "$subtitle" <<'OSA'
 on run argv
   display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv)
