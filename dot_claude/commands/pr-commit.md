@@ -1,10 +1,10 @@
 ---
-description: Commit the pending work, then open a draft PR whose description fills the repo's PR template
+description: Commit the pending work, then open a PR whose description fills the repo's PR template
 argument-hint: [domain or extra context]
-allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git commit:*), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(git symbolic-ref:*), Bash(git config:*), Bash(git branch:*), Bash(git ls-files:*), Bash(git show:*), Bash(git push:*), Bash(gh pr:*), Bash(gh repo:*), Read, Glob
+allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git add:*), Bash(git commit:*), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(git symbolic-ref:*), Bash(git config:*), Bash(git branch:*), Bash(git ls-files:*), Bash(git show:*), Bash(git push:*), Bash(gh pr:*), Bash(gh repo:*), Read, Glob
 ---
 
-Commit the work in progress, then open a draft pull request that fills the repo's PR template.
+Commit the work in progress, then open a pull request that fills the repo's PR template.
 
 Extra context from the user (a domain hint, notes, or empty): $ARGUMENTS
 
@@ -24,11 +24,8 @@ Stop and ask the user for a branch name if HEAD is `$BASE`. Do not open a pull r
 
 ## 2. Commit the pending work
 
-Do this step only when something is staged — `git status --short` shows a mark in the first column.
-
-- Commit exactly what is staged, and nothing else.
-- Never run `git add`, and never stage a file. The user stages the work they want in the commit. An unstaged change and an untracked file are deliberate: leave them in the working tree and list them for the user.
-- Nothing staged: make no commit. Say that the branch was already committed and go to step 3.
+- Commit all changes in the working tree, untracked files included: `git add -A`, then `git commit`.
+- No changes: make no commit. Say that the branch was already committed and go to step 3.
 - Message: one subject line only, no body. The PR description holds the prose.
 
 ## 3. Write the PR title and description
@@ -63,16 +60,12 @@ Style, same as the comment rules in CLAUDE.md:
 - Say what the change does and what a reviewer must know: a constraint, a needed order, a migration, a deliberate deviation.
 - Do not restate the diff file by file. Do not add a summary of the summary, a "Notes" section the template does not ask for, or praise of the change.
 
-## 4. Open the draft pull request
+## 4. Open the pull request
 
 Write the description to a temporary file and give it to `gh` with `--body-file`. Do not put the description in a shell argument. Remove the file at the end.
 
 - Push the branch first: `git push -u origin HEAD`.
-- No pull request open yet: `gh pr create --draft --base "$BASE" --title "<title>" --body-file <file>`.
+- No pull request open yet: `gh pr create --base "$BASE" --title "<title>" --body-file <file>`.
 - A pull request is already open: keep it, and update it with `gh pr edit --title "<title>" --body-file <file>`. Tell the user the pull request number. Do not make a second one, and do not change its draft state.
 
 Print the commit subject, the pull request URL, and the sections you left for the user to fill.
-
-## Rules
-
-Never stage a file. `git add` is not yours to run; the staged set is the user's choice of what the commit holds.
