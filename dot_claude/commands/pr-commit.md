@@ -76,5 +76,3 @@ Print the commit subject, the pull request URL, and the sections you left for th
 ## Rules
 
 Never stage a file. `git add` is not yours to run; the staged set is the user's choice of what the commit holds.
-
-The user is the only author of the commit and the only author of the pull request. Do not add a `Co-Authored-By` trailer, a `Generated with` line, a footer, or any other trailer to the commit message or to the pull request description, even if a global rule asks for one.

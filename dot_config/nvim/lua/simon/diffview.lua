@@ -25,54 +25,32 @@ function M.cursor_file()
     return nil
   end
 
-  local line
+  local pos
   if file == view.cur_entry and view.cur_layout then
     local ok_win, win = pcall(function()
       return view.cur_layout:get_main_win()
     end)
     if ok_win and win and win.id and vim.api.nvim_win_is_valid(win.id) then
-      line = vim.api.nvim_win_get_cursor(win.id)[1]
+      pos = vim.api.nvim_win_get_cursor(win.id)
     end
   end
 
-  return file.absolute_path, line
+  return file.absolute_path, pos
 end
 
-function M.refresh_and_restore(view)
-  if type(view.update_files) ~= "function" then
-    return
-  end
-
-  local restore = view.cur_entry and view.cur_entry.path
-
-  view:update_files(function(err)
-    if err or not restore or type(view.set_file_by_path) ~= "function" then
-      return
-    end
-
-    vim.schedule(function()
-      if view:is_cur_tabpage() then
-        view:set_file_by_path(restore, false, true)
-      end
-    end)
-  end)
-end
-
-function M.edit_cursor_file()
-  local view = current_view()
-  if not view then
-    return
-  end
-
-  local path, line = M.cursor_file()
+function M.goto_cursor_file()
+  local path, pos = M.cursor_file()
   if not path then
     vim.notify("No file under the cursor", vim.log.levels.WARN)
     return
   end
 
-  require("simon.tmux").popup_edit(path, line, function()
-    M.refresh_and_restore(view)
-  end)
+  vim.cmd("1tabnext")
+  vim.cmd("tabonly")
+  vim.cmd("edit " .. vim.fn.fnameescape(path))
+  if pos then
+    pcall(vim.api.nvim_win_set_cursor, 0, pos)
+  end
 end
 
 return M
