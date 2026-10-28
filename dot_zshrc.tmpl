@@ -1,10 +1,6 @@
 export PATH="$HOME/.scripts:$PATH"
 export PATH="$HOME/.local/bin:$PATH"
 
-export P0_DEV_NAME=simon-manzler
-export P0_DISABLE_GRAFANA=1
-export OTEL_SDK_DISABLED=true
-
 # prompt
 setopt PROMPT_SUBST
 
@@ -50,8 +46,6 @@ fi
 # alias
 alias vi=nvim
 alias vim=nvim
-alias gg='nvim "+Neogit kind=replace"'
-alias gcplogin='gcloud auth login --update-adc'
 
 # editor
 export EDITOR=nvim
@@ -75,24 +69,10 @@ bindkey -v
 bindkey -M viins 'jk' vi-cmd-mode
 bindkey '^y' autosuggest-accept
 
-# straight into neogit; a half-typed line is stashed and comes back afterwards
-neogit-widget() {
-  [[ -n $BUFFER ]] && zle push-line
-  BUFFER='gg'
-  zle accept-line
-}
-zle -N neogit-widget
-bindkey '^g' neogit-widget
-bindkey -M viins '^g' neogit-widget
-bindkey -M vicmd '^g' neogit-widget
-
 # nvm
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
-
-# work
-source /Users/simon/.config/op/plugins.sh
 
 # history
 HISTSIZE=1000
